@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard de Cifras</title>
+<style>
+  * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+  body { margin: 0; background: #f4f4f6; color: #222; }
+  header { background: #3949ab; color: white; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  .container { max-width: 900px; margin: 0 auto; padding: 16px; }
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  .lista, .form { flex: 1; min-width: 300px; }
+  .card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .musica-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
+  .musica-item:last-child { border-bottom: none; }
+  .musica-item button { margin-left: 8px; }
+  label { display: block; margin-top: 12px; font-weight: 600; font-size: 0.9rem; }
+  input, select, textarea { width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
+  textarea { font-family: 'Courier New', monospace; min-height: 280px; resize: vertical; }
+  button { cursor: pointer; border: none; border-radius: 4px; padding: 8px 14px; font-size: 0.9rem; }
+  .btn-primary { background: #3949ab; color: white; margin-top: 16px; }
+  .btn-danger { background: #e53935; color: white; }
+  .btn-secondary { background: #ddd; color: #333; }
+  .hint { font-size: 0.8rem; color: #777; margin-top: 4px; }
+  .status { margin-top: 8px; font-size: 0.9rem; }
+  .status.ok { color: #2e7d32; }
+  .status.erro { color: #c62828; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Dashboard de Cifras</h1>
+</header>
+<div class="container">
+  <div class="layout">
+    <div class="lista">
+      <div class="card">
+        <h3>Músicas cadastradas</h3>
+        <div id="lista-musicas">Carregando...</div>
+        <button class="btn-secondary" onclick="novaMusica()" style="margin-top:12px;">+ Nova música</button>
+      </div>
+    </div>
+
+    <div class="form">
+      <div class="card">
+        <h3 id="form-titulo">Nova música</h3>
+        <input type="hidden" id="musica-id">
+
+        <label>Título</label>
+        <input type="text" id="campo-titulo" placeholder="Ex: Sua Graça Me Basta">
+
+        <label>Tom original</label>
+        <select id="campo-tom">
+          <option>C</option><option>C#</option><option>D</option><option>D#</option>
+          <option>E</option><option>F</option><option>F#</option><option>G</option>
+          <option>G#</option><option>A</option><option>A#</option><option>B</option>
+        </select>
+
+        <label>Cifra (use [Acorde] antes da sílaba/palavra)</label>
+        <textarea id="campo-cifra" placeholder="[C]Sua graça [G]me basta [Am]hoje e [F]sempre"></textarea>
+        <div class="hint">Cole o texto copiado de qualquer lugar e ajuste os acordes para o formato [C], [G], [Am] etc.</div>
+
+        <button class="btn-primary" onclick="salvarMusica()">Salvar</button>
+        <button class="btn-danger" id="btn-excluir" onclick="excluirMusica()" style="display:none; margin-top:16px;">Excluir</button>
+
+        <div id="status" class="status"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = ''; // mesmo host (rotas /dashboard-api/*)
+
+async function carregarLista() {
+  const resp = await fetch(API + '/dashboard-api/musicas');
+  const musicas = await resp.json();
+  const container = document.getElementById('lista-musicas');
+
+  if (musicas.length === 0) {
+    container.innerHTML = '<p>Nenhuma música cadastrada ainda.</p>';
+    return;
+  }
+
+  container.innerHTML = '';
+  musicas.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'musica-item';
+    div.innerHTML = `
+      <span>${m.titulo} <small style="color:#888">(${m.tomOriginal})</small></span>
+      <span>
+        <button class="btn-secondary" onclick="editarMusica('${m.id}')">Editar</button>
+      </span>
+    `;
+    container.appendChild(div);
+  });
+}
+
+function novaMusica() {
+  document.getElementById('form-titulo').textContent = 'Nova música';
+  document.getElementById('musica-id').value = '';
+  document.getElementById('campo-titulo').value = '';
+  document.getElementById('campo-tom').value = 'C';
+  document.getElementById('campo-cifra').value = '';
+  document.getElementById('btn-excluir').style.display = 'none';
+  document.getElementById('status').textContent = '';
+}
+
+async function editarMusica(id) {
+  const resp = await fetch(API + '/dashboard-api/musicas/' + id);
+  if (!resp.ok) {
+    mostrarStatus('Erro ao carregar música.', true);
+    return;
+  }
+  const m = await resp.json();
+  document.getElementById('form-titulo').textContent = 'Editar música';
+  document.getElementById('musica-id').value = m.id;
+  document.getElementById('campo-titulo').value = m.titulo;
+  document.getElementById('campo-tom').value = m.tomOriginal;
+  document.getElementById('campo-cifra').value = m.cifraOriginal;
+  document.getElementById('btn-excluir').style.display = 'inline-block';
+  document.getElementById('status').textContent = '';
+}
+
+async function salvarMusica() {
+  const id = document.getElementById('musica-id').value;
+  const titulo = document.getElementById('campo-titulo').value.trim();
+  const tomOriginal = document.getElementById('campo-tom').value;
+  const cifraOriginal = document.getElementById('campo-cifra').value;
+
+  if (!titulo || !cifraOriginal) {
+    mostrarStatus('Preencha título e cifra.', true);
+    return;
+  }
+
+  const payload = { titulo, tomOriginal, cifraOriginal };
+
+  let resp;
+  if (id) {
+    resp = await fetch(API + '/dashboard-api/musicas/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } else {
+    resp = await fetch(API + '/dashboard-api/musicas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  if (!resp.ok) {
+    mostrarStatus('Erro ao salvar.', true);
+    return;
+  }
+
+  const salvo = await resp.json();
+  if (!id) {
+    document.getElementById('musica-id').value = salvo.id;
+    document.getElementById('btn-excluir').style.display = 'inline-block';
+    document.getElementById('form-titulo').textContent = 'Editar música';
+  }
+
+  mostrarStatus('Salvo com sucesso.', false);
+  carregarLista();
+}
+
+async function excluirMusica() {
+  const id = document.getElementById('musica-id').value;
+  if (!id) return;
+  if (!confirm('Excluir esta música? Variantes e histórico associados também serão removidos.')) return;
+
+  const resp = await fetch(API + '/dashboard-api/musicas/' + id, { method: 'DELETE' });
+  if (!resp.ok) {
+    mostrarStatus('Erro ao excluir.', true);
+    return;
+  }
+
+  novaMusica();
+  mostrarStatus('Excluído.', false);
+  carregarLista();
+}
+
+function mostrarStatus(msg, erro) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status ' + (erro ? 'erro' : 'ok');
+}
+
+carregarLista();
+</script>
+</body>
+</html>
