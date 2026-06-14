@@ -51,6 +51,9 @@
         <label>Título</label>
         <input type="text" id="campo-titulo" placeholder="Ex: Sua Graça Me Basta">
 
+        <label>Cantor / Banda</label>
+        <input type="text" id="campo-artista" placeholder="Ex: Casa Worship">
+
         <label>Tom original</label>
         <select id="campo-tom">
           <option>C</option><option>C#</option><option>D</option><option>D#</option>
@@ -89,7 +92,7 @@ async function carregarLista() {
     const div = document.createElement('div');
     div.className = 'musica-item';
     div.innerHTML = `
-      <span>${m.titulo} <small style="color:#888">(${m.tomOriginal})</small></span>
+      <span>${m.titulo}${m.artista ? ' — ' + m.artista : ''} <small style="color:#888">(${m.tomOriginal})</small></span>
       <span>
         <button class="btn-secondary" onclick="editarMusica('${m.id}')">Editar</button>
       </span>
@@ -102,6 +105,7 @@ function novaMusica() {
   document.getElementById('form-titulo').textContent = 'Nova música';
   document.getElementById('musica-id').value = '';
   document.getElementById('campo-titulo').value = '';
+  document.getElementById('campo-artista').value = '';
   document.getElementById('campo-tom').value = 'C';
   document.getElementById('campo-cifra').value = '';
   document.getElementById('btn-excluir').style.display = 'none';
@@ -118,6 +122,7 @@ async function editarMusica(id) {
   document.getElementById('form-titulo').textContent = 'Editar música';
   document.getElementById('musica-id').value = m.id;
   document.getElementById('campo-titulo').value = m.titulo;
+  document.getElementById('campo-artista').value = m.artista || '';
   document.getElementById('campo-tom').value = m.tomOriginal;
   document.getElementById('campo-cifra').value = m.cifraOriginal;
   document.getElementById('btn-excluir').style.display = 'inline-block';
@@ -127,6 +132,7 @@ async function editarMusica(id) {
 async function salvarMusica() {
   const id = document.getElementById('musica-id').value;
   const titulo = document.getElementById('campo-titulo').value.trim();
+  const artista = document.getElementById('campo-artista').value.trim();
   const tomOriginal = document.getElementById('campo-tom').value;
   const cifraOriginal = document.getElementById('campo-cifra').value;
 
@@ -135,7 +141,7 @@ async function salvarMusica() {
     return;
   }
 
-  const payload = { titulo, tomOriginal, cifraOriginal };
+  const payload = { titulo, artista: artista || null, tomOriginal, cifraOriginal };
 
   let resp;
   if (id) {

@@ -19,11 +19,17 @@ async function initSchema() {
     CREATE TABLE IF NOT EXISTS cifras_musicas (
       id TEXT PRIMARY KEY,
       titulo TEXT NOT NULL,
+      artista TEXT,
       cifra_original TEXT NOT NULL,
       tom_original TEXT NOT NULL,
       criado_em TIMESTAMP NOT NULL DEFAULT now(),
       atualizado_em TIMESTAMP NOT NULL DEFAULT now()
     );
+  `);
+
+  // Migração leve: se a tabela já existia sem a coluna, adiciona agora.
+  await pool.query(`
+    ALTER TABLE cifras_musicas ADD COLUMN IF NOT EXISTS artista TEXT;
   `);
 
   await pool.query(`

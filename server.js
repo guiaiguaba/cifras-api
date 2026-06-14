@@ -37,14 +37,14 @@ function exigirApiKey(req, res, next) {
 
 app.get('/musicas', exigirApiKey, async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, titulo, cifra_original, tom_original FROM cifras_musicas ORDER BY titulo'
+    'SELECT id, titulo, artista, cifra_original, tom_original FROM cifras_musicas ORDER BY titulo'
   );
   res.json(rows.map(formatarMusica));
 });
 
 app.get('/musicas/:id', exigirApiKey, async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, titulo, cifra_original, tom_original FROM cifras_musicas WHERE id = $1',
+    'SELECT id, titulo, artista, cifra_original, tom_original FROM cifras_musicas WHERE id = $1',
     [req.params.id]
   );
   if (rows.length === 0) return res.status(404).json({ erro: 'Música não encontrada.' });
@@ -52,25 +52,25 @@ app.get('/musicas/:id', exigirApiKey, async (req, res) => {
 });
 
 app.post('/musicas', exigirApiKey, async (req, res) => {
-  const { titulo, cifraOriginal, tomOriginal } = req.body;
+  const { titulo, artista, cifraOriginal, tomOriginal } = req.body;
   if (!titulo || !cifraOriginal || !tomOriginal) {
     return res.status(400).json({ erro: 'titulo, cifraOriginal e tomOriginal são obrigatórios.' });
   }
   const id = crypto.randomUUID();
   await pool.query(
-    'INSERT INTO cifras_musicas (id, titulo, cifra_original, tom_original) VALUES ($1, $2, $3, $4)',
-    [id, titulo, cifraOriginal, tomOriginal]
+    'INSERT INTO cifras_musicas (id, titulo, artista, cifra_original, tom_original) VALUES ($1, $2, $3, $4, $5)',
+    [id, titulo, artista ?? null, cifraOriginal, tomOriginal]
   );
-  res.status(201).json({ id, titulo, cifraOriginal, tomOriginal });
+  res.status(201).json({ id, titulo, artista: artista ?? null, cifraOriginal, tomOriginal });
 });
 
 app.put('/musicas/:id', exigirApiKey, async (req, res) => {
-  const { titulo, cifraOriginal, tomOriginal } = req.body;
+  const { titulo, artista, cifraOriginal, tomOriginal } = req.body;
   const { rowCount } = await pool.query(
     `UPDATE cifras_musicas
-     SET titulo = $1, cifra_original = $2, tom_original = $3, atualizado_em = now()
-     WHERE id = $4`,
-    [titulo, cifraOriginal, tomOriginal, req.params.id]
+     SET titulo = $1, artista = $2, cifra_original = $3, tom_original = $4, atualizado_em = now()
+     WHERE id = $5`,
+    [titulo, artista ?? null, cifraOriginal, tomOriginal, req.params.id]
   );
   if (rowCount === 0) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json({ ok: true });
@@ -182,14 +182,14 @@ app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 // mas não exponha a URL publicamente.
 app.get('/dashboard-api/musicas', async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, titulo, cifra_original, tom_original FROM cifras_musicas ORDER BY titulo'
+    'SELECT id, titulo, artista, cifra_original, tom_original FROM cifras_musicas ORDER BY titulo'
   );
   res.json(rows.map(formatarMusica));
 });
 
 app.get('/dashboard-api/musicas/:id', async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, titulo, cifra_original, tom_original FROM cifras_musicas WHERE id = $1',
+    'SELECT id, titulo, artista, cifra_original, tom_original FROM cifras_musicas WHERE id = $1',
     [req.params.id]
   );
   if (rows.length === 0) return res.status(404).json({ erro: 'Música não encontrada.' });
@@ -197,25 +197,25 @@ app.get('/dashboard-api/musicas/:id', async (req, res) => {
 });
 
 app.post('/dashboard-api/musicas', async (req, res) => {
-  const { titulo, cifraOriginal, tomOriginal } = req.body;
+  const { titulo, artista, cifraOriginal, tomOriginal } = req.body;
   if (!titulo || !cifraOriginal || !tomOriginal) {
     return res.status(400).json({ erro: 'titulo, cifraOriginal e tomOriginal são obrigatórios.' });
   }
   const id = crypto.randomUUID();
   await pool.query(
-    'INSERT INTO cifras_musicas (id, titulo, cifra_original, tom_original) VALUES ($1, $2, $3, $4)',
-    [id, titulo, cifraOriginal, tomOriginal]
+    'INSERT INTO cifras_musicas (id, titulo, artista, cifra_original, tom_original) VALUES ($1, $2, $3, $4, $5)',
+    [id, titulo, artista ?? null, cifraOriginal, tomOriginal]
   );
-  res.status(201).json({ id, titulo, cifraOriginal, tomOriginal });
+  res.status(201).json({ id, titulo, artista: artista ?? null, cifraOriginal, tomOriginal });
 });
 
 app.put('/dashboard-api/musicas/:id', async (req, res) => {
-  const { titulo, cifraOriginal, tomOriginal } = req.body;
+  const { titulo, artista, cifraOriginal, tomOriginal } = req.body;
   const { rowCount } = await pool.query(
     `UPDATE cifras_musicas
-     SET titulo = $1, cifra_original = $2, tom_original = $3, atualizado_em = now()
-     WHERE id = $4`,
-    [titulo, cifraOriginal, tomOriginal, req.params.id]
+     SET titulo = $1, artista = $2, cifra_original = $3, tom_original = $4, atualizado_em = now()
+     WHERE id = $5`,
+    [titulo, artista ?? null, cifraOriginal, tomOriginal, req.params.id]
   );
   if (rowCount === 0) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json({ ok: true });
@@ -235,6 +235,7 @@ function formatarMusica(row) {
   return {
     id: row.id,
     titulo: row.titulo,
+    artista: row.artista,
     cifraOriginal: row.cifra_original,
     tomOriginal: row.tom_original,
   };
