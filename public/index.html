@@ -19,6 +19,7 @@
   label { display: block; margin-top: 12px; font-weight: 600; font-size: 0.9rem; }
   input, select, textarea { width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
   textarea { font-family: 'Courier New', monospace; min-height: 280px; resize: vertical; }
+  #preview-imagem img { max-width: 80px; max-height: 80px; border-radius: 6px; object-fit: cover; }
   button { cursor: pointer; border: none; border-radius: 4px; padding: 8px 14px; font-size: 0.9rem; }
   .btn-primary { background: #3949ab; color: white; margin-top: 16px; }
   .btn-danger { background: #e53935; color: white; }
@@ -53,6 +54,11 @@
 
         <label>Cantor / Banda</label>
         <input type="text" id="campo-artista" placeholder="Ex: Casa Worship">
+
+        <label>URL da imagem de capa (opcional)</label>
+        <input type="text" id="campo-imagem" placeholder="https://...">
+        <div class="hint">Cole o link de uma imagem já hospedada (ex: Imgur, Google Drive público, etc).</div>
+        <div id="preview-imagem" style="margin-top:8px;"></div>
 
         <label>Tom original</label>
         <select id="campo-tom">
@@ -91,8 +97,11 @@ async function carregarLista() {
   musicas.forEach(m => {
     const div = document.createElement('div');
     div.className = 'musica-item';
+    const capa = m.imagemUrl
+      ? `<img src="${m.imagemUrl}" style="width:32px;height:32px;border-radius:4px;object-fit:cover;margin-right:8px;vertical-align:middle;" onerror="this.style.display='none'">`
+      : '';
     div.innerHTML = `
-      <span>${m.titulo}${m.artista ? ' — ' + m.artista : ''} <small style="color:#888">(${m.tomOriginal})</small></span>
+      <span>${capa}${m.titulo}${m.artista ? ' — ' + m.artista : ''} <small style="color:#888">(${m.tomOriginal})</small></span>
       <span>
         <button class="btn-secondary" onclick="editarMusica('${m.id}')">Editar</button>
       </span>
@@ -106,6 +115,8 @@ function novaMusica() {
   document.getElementById('musica-id').value = '';
   document.getElementById('campo-titulo').value = '';
   document.getElementById('campo-artista').value = '';
+  document.getElementById('campo-imagem').value = '';
+  document.getElementById('preview-imagem').innerHTML = '';
   document.getElementById('campo-tom').value = 'C';
   document.getElementById('campo-cifra').value = '';
   document.getElementById('btn-excluir').style.display = 'none';
@@ -123,6 +134,8 @@ async function editarMusica(id) {
   document.getElementById('musica-id').value = m.id;
   document.getElementById('campo-titulo').value = m.titulo;
   document.getElementById('campo-artista').value = m.artista || '';
+  document.getElementById('campo-imagem').value = m.imagemUrl || '';
+  atualizarPreviewImagem();
   document.getElementById('campo-tom').value = m.tomOriginal;
   document.getElementById('campo-cifra').value = m.cifraOriginal;
   document.getElementById('btn-excluir').style.display = 'inline-block';
@@ -133,6 +146,7 @@ async function salvarMusica() {
   const id = document.getElementById('musica-id').value;
   const titulo = document.getElementById('campo-titulo').value.trim();
   const artista = document.getElementById('campo-artista').value.trim();
+  const imagemUrl = document.getElementById('campo-imagem').value.trim();
   const tomOriginal = document.getElementById('campo-tom').value;
   const cifraOriginal = document.getElementById('campo-cifra').value;
 
@@ -141,7 +155,7 @@ async function salvarMusica() {
     return;
   }
 
-  const payload = { titulo, artista: artista || null, tomOriginal, cifraOriginal };
+  const payload = { titulo, artista: artista || null, imagemUrl: imagemUrl || null, tomOriginal, cifraOriginal };
 
   let resp;
   if (id) {
@@ -197,6 +211,18 @@ function mostrarStatus(msg, erro) {
 }
 
 carregarLista();
+
+document.getElementById('campo-imagem').addEventListener('input', atualizarPreviewImagem);
+
+function atualizarPreviewImagem() {
+  const url = document.getElementById('campo-imagem').value.trim();
+  const preview = document.getElementById('preview-imagem');
+  if (url) {
+    preview.innerHTML = `<img src="${url}" onerror="this.style.display='none'">`;
+  } else {
+    preview.innerHTML = '';
+  }
+}
 </script>
 </body>
 </html>

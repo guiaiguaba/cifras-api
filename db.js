@@ -31,6 +31,9 @@ async function initSchema() {
   await pool.query(`
     ALTER TABLE cifras_musicas ADD COLUMN IF NOT EXISTS artista TEXT;
   `);
+  await pool.query(`
+    ALTER TABLE cifras_musicas ADD COLUMN IF NOT EXISTS imagem_url TEXT;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cifras_variantes (
