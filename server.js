@@ -263,6 +263,129 @@ function formatarRegistro(row) {
 }
 
 // ---------------------------------------------------------------------
+// Proxy da Bíblia (ABíbliaDigital)
+// A key da ABíbliaDigital fica segura no servidor, não exposta no app.
+// Configure a variável de ambiente BIBLIA_TOKEN no Render com o token
+// obtido em abibliadigital.com.br após o cadastro.
+// ---------------------------------------------------------------------
+
+const BIBLIA_BASE = 'https://www.abibliadigital.com.br/api';
+const BIBLIA_TOKEN = process.env.BIBLIA_TOKEN;
+
+function bibliaHeaders() {
+  return {
+    'Authorization': `Bearer ${BIBLIA_TOKEN}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+// Cache em memória para reduzir chamadas à API externa (limite do plano free).
+const bibliaCache = new Map();
+const BIBLIA_TTL = 24 * 60 * 60 * 1000; // 24h para capítulos/livros
+const BIBLIA_DIA_TTL = 60 * 60 * 1000;  // 1h para versículo do dia
+
+async function bibliaFetch(url, ttl = BIBLIA_TTL) {
+  const hit = bibliaCache.get(url);
+  if (hit && Date.now() - hit.ts < ttl) return hit.data;
+
+  const resp = await fetch(url, { headers: bibliaHeaders() });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`ABíbliaDigital ${resp.status}: ${err}`);
+  }
+  const data = await resp.json();
+  bibliaCache.set(url, { data, ts: Date.now() });
+  return data;
+}
+
+// GET /biblia/livros — lista todos os livros
+app.get('/biblia/livros', exigirApiKey, async (req, res) => {
+  try {
+    const data = await bibliaFetch(`${BIBLIA_BASE}/books`);
+    res.json(data);
+  } catch (e) {
+    console.error('[biblia] livros:', e.message);
+    res.status(502).json({ erro: 'Erro ao buscar livros', detalhe: e.message });
+  }
+});
+
+// GET /biblia/capitulo?versao=nvi&livro=jo&capitulo=3
+app.get('/biblia/capitulo', exigirApiKey, async (req, res) => {
+  const { versao = 'nvi', livro, capitulo } = req.query;
+  if (!livro || !capitulo) {
+    return res.status(400).json({ erro: 'livro e capitulo são obrigatórios.' });
+  }
+  try {
+    const data = await bibliaFetch(
+      `${BIBLIA_BASE}/verses/${versao}/${livro}/${capitulo}`
+    );
+    res.json(data);
+  } catch (e) {
+    console.error('[biblia] capitulo:', e.message);
+    res.status(502).json({ erro: 'Erro ao buscar capítulo', detalhe: e.message });
+  }
+});
+
+// GET /biblia/versiculo?versao=nvi&livro=jo&capitulo=3&versiculo=16
+app.get('/biblia/versiculo', exigirApiKey, async (req, res) => {
+  const { versao = 'nvi', livro, capitulo, versiculo } = req.query;
+  if (!livro || !capitulo || !versiculo) {
+    return res.status(400).json({ erro: 'livro, capitulo e versiculo são obrigatórios.' });
+  }
+  try {
+    const data = await bibliaFetch(
+      `${BIBLIA_BASE}/verses/${versao}/${livro}/${capitulo}/${versiculo}`
+    );
+    res.json(data);
+  } catch (e) {
+    console.error('[biblia] versiculo:', e.message);
+    res.status(502).json({ erro: 'Erro ao buscar versículo', detalhe: e.message });
+  }
+});
+
+// GET /biblia/versiculo-dia?versao=nvi
+// ABíbliaDigital não tem endpoint de "versículo do dia" oficial —
+// usamos um versículo determinístico baseado no dia do ano (0-365)
+// mapeado para uma lista curada de referências significativas.
+const VERSICULOS_DIA = [
+  { livro: 'jo', cap: 3, ver: 16 }, { livro: 'sl', cap: 23, ver: 1 },
+  { livro: 'fp', cap: 4, ver: 13 }, { livro: 'rm', cap: 8, ver: 28 },
+  { livro: 'is', cap: 40, ver: 31 }, { livro: 'pv', cap: 3, ver: 5 },
+  { livro: 'mt', cap: 6, ver: 33 }, { livro: 'jr', cap: 29, ver: 11 },
+  { livro: 'sl', cap: 46, ver: 1 }, { livro: 'fp', cap: 4, ver: 7 },
+  { livro: 'rm', cap: 12, ver: 2 }, { livro: 'ef', cap: 2, ver: 8 },
+  { livro: 'hb', cap: 11, ver: 1 }, { livro: 'sl', cap: 91, ver: 1 },
+  { livro: 'mt', cap: 11, ver: 28 }, { livro: '1co', cap: 13, ver: 4 },
+  { livro: 'pv', cap: 18, ver: 10 }, { livro: 'sl', cap: 37, ver: 4 },
+  { livro: 'rm', cap: 5, ver: 8 }, { livro: 'jo', cap: 14, ver: 6 },
+  { livro: 'ef', cap: 6, ver: 10 }, { livro: 'mt', cap: 5, ver: 3 },
+  { livro: 'sl', cap: 119, ver: 105 }, { livro: '2tm', cap: 1, ver: 7 },
+  { livro: 'gl', cap: 5, ver: 22 }, { livro: 'sl', cap: 27, ver: 1 },
+  { livro: 'rm', cap: 1, ver: 16 }, { livro: 'tg', cap: 1, ver: 5 },
+  { livro: 'fp', cap: 4, ver: 4 }, { livro: 'jo', cap: 15, ver: 5 },
+  { livro: 'pv', cap: 16, ver: 3 }, { livro: 'sl', cap: 1, ver: 1 },
+];
+
+app.get('/biblia/versiculo-dia', exigirApiKey, async (req, res) => {
+  const { versao = 'nvi' } = req.query;
+  const agora = new Date();
+  const inicio = new Date(agora.getFullYear(), 0, 0);
+  const diaDoAno = Math.floor((agora - inicio) / 86400000);
+  const ref = VERSICULOS_DIA[diaDoAno % VERSICULOS_DIA.length];
+
+  try {
+    const data = await bibliaFetch(
+      `${BIBLIA_BASE}/verses/${versao}/${ref.livro}/${ref.cap}/${ref.ver}`,
+      BIBLIA_DIA_TTL
+    );
+    res.json(data);
+  } catch (e) {
+    console.error('[biblia] versiculo-dia:', e.message);
+    res.status(502).json({ erro: 'Erro ao buscar versículo do dia', detalhe: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------------------
 
