@@ -343,21 +343,7 @@ app.get('/biblia/versiculo', exigirApiKey, async (req, res) => {
   }
 });
 
-// GET /biblia/busca?versao=nvi&q=amor
-app.get('/biblia/busca', exigirApiKey, async (req, res) => {
-  const { versao = 'nvi', q } = req.query;
-  if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
-  try {
-    const data = await bibliaFetch(
-      `${BIBLIA_BASE}/verses/search/${versao}/${encodeURIComponent(q)}`,
-      BIBLIA_TTL
-    );
-    res.json(data);
-  } catch (e) {
-    console.error('[biblia] busca:', e.message);
-    res.status(502).json({ erro: 'Erro ao buscar', detalhe: e.message });
-  }
-});
+// GET /biblia/versiculo-dia?versao=nvi
 // ABíbliaDigital não tem endpoint de "versículo do dia" oficial —
 // usamos um versículo determinístico baseado no dia do ano (0-365)
 // mapeado para uma lista curada de referências significativas.
