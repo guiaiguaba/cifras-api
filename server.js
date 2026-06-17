@@ -495,64 +495,124 @@ app.get('/cifra/buscar', async (req, res) => {
 });
 
 // GET /cifra/obter?artista=gabriela-rocha&musica=bondade-de-deus
-// Tenta a API JSON do CifraClub; se falhar, faz scraping do HTML
 app.get('/cifra/obter', async (req, res) => {
   const { artista, musica } = req.query;
   if (!artista || !musica) return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
 
   try {
-    // Tenta API JSON interna primeiro
-    const apiUrl = `https://api.cifraclub.com.br/api/v1/songs/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
-    const apiResp = await fetch(apiUrl, { headers: HEADERS_CC, signal: AbortSignal.timeout(10000) }).catch(() => null);
-
-    if (apiResp?.ok) {
-      const data = await apiResp.json();
-      const cifra = (data.chord || data.cifra || data.content || '').trim();
-      if (cifra) {
-        return res.json({
-          titulo: data.name || data.titulo || musica,
-          artista: data.artist?.name || data.artista || artista,
-          tom: (data.key || data.tom || 'C').replace(/[^A-Gb#m]/g, '') || 'C',
-          cifra,
-          url: `https://www.cifraclub.com.br/${artista}/${musica}/`,
-        });
-      }
-    }
-
-    // Fallback: scraping HTML
     const pageUrl = `https://www.cifraclub.com.br/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
     const pageResp = await fetch(pageUrl, {
-      headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml' },
-      signal: AbortSignal.timeout(15000),
+      headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml,*/*' },
+      signal: AbortSignal.timeout(20000),
     });
     if (!pageResp.ok) throw new Error(`CifraClub retornou ${pageResp.status}`);
 
     const html = await pageResp.text();
     const $ = cheerio.load(html);
 
-    // Título e artista
-    const titulo = $('h1.t1, h1').first().text().trim() || musica;
-    const nomeArtista = $('h2.t3 a, .artist-name a, h2 a').first().text().trim() || artista;
+    // -----------------------------------------------------------------
+    // 1. Tenta extrair do JSON embutido nos scripts (Next.js __NEXT_DATA__)
+    // -----------------------------------------------------------------
+    let titulo = '';
+    let nomeArtista = '';
+    let tom = '';
+    let cifra = '';
 
-    // Tom
-    const tom = ($('.cifra_tom, .tom-atual, [data-key]').first().text().trim()
-      || $('select#cifra_tom option[selected]').first().text().trim()
-      || 'C').replace(/[^A-Gb#m]/g, '') || 'C';
-
-    // Cifra — converte <b>Acorde</b> para [Acorde]
-    const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, pre').first();
-    if (!elemCifra.length) {
-      return res.status(404).json({ erro: 'Cifra não encontrada. Verifique o artista e o nome da música.' });
+    const nextData = $('script#__NEXT_DATA__').html();
+    if (nextData) {
+      try {
+        const json = JSON.parse(nextData);
+        // Caminha pelo objeto até encontrar os dados da cifra
+        const props = json?.props?.pageProps || json?.props || {};
+        titulo = props.song?.name || props.cifra?.name || props.name || '';
+        nomeArtista = props.artist?.name || props.cifra?.artist?.name || props.artistName || '';
+        tom = props.song?.key || props.cifra?.key || props.key || '';
+        cifra = props.song?.chord || props.cifra?.chord || props.chord || '';
+      } catch (_) {}
     }
-    elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
-    const cifra = elemCifra.text().trim();
 
-    if (!cifra) return res.status(404).json({ erro: 'Cifra não encontrada nesta página.' });
+    // -----------------------------------------------------------------
+    // 2. Tenta extrair de outros blocos JSON na página
+    // -----------------------------------------------------------------
+    if (!cifra) {
+      $('script').each((_, el) => {
+        const txt = $(el).html() || '';
 
-    res.json({ titulo, artista: nomeArtista, tom, cifra, url: pageUrl });
+        // Padrão: var CIFRA_DATA = {...}
+        const m1 = txt.match(/(?:CIFRA_DATA|cifraData|songData)\s*=\s*({[\s\S]{20,5000}})/);
+        if (m1) {
+          try {
+            const d = JSON.parse(m1[1]);
+            titulo = titulo || d.name || d.titulo || '';
+            nomeArtista = nomeArtista || d.artist?.name || d.artista || '';
+            tom = tom || d.key || d.tom || '';
+            cifra = cifra || d.chord || d.cifra || '';
+          } catch (_) {}
+        }
+
+        // Padrão: "chord":"..." no JSON inline
+        if (!cifra) {
+          const m2 = txt.match(/"chord"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (m2) cifra = m2[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+        }
+        if (!titulo) {
+          const m3 = txt.match(/"(?:name|titulo)"\s*:\s*"([^"]+)"/);
+          if (m3) titulo = m3[1];
+        }
+      });
+    }
+
+    // -----------------------------------------------------------------
+    // 3. Fallback: scraping direto do HTML
+    // -----------------------------------------------------------------
+    if (!cifra) {
+      // Título — meta tag é mais confiável que h1
+      titulo = titulo
+        || $('meta[property="og:title"]').attr('content')?.replace(' - Cifra Club', '').replace(' | Cifra Club', '').trim()
+        || $('title').text().replace(' - Cifra Club', '').replace(' | Cifra Club', '').trim()
+        || musica;
+
+      nomeArtista = nomeArtista
+        || $('h2.t3 a').first().text().trim()
+        || $('[itemprop="byArtist"] [itemprop="name"]').first().text().trim()
+        || artista;
+
+      // Tom — meta ou elemento específico
+      tom = tom
+        || $('meta[itemprop="musicalKey"]').attr('content')
+        || $('.cifra_tom b').first().text().trim()
+        || $('.tom-atual').first().text().trim()
+        || 'C';
+
+      // Cifra — elemento pre com os acordes
+      const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, [class*="cifra"] pre, pre').first();
+      elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
+      cifra = elemCifra.text().trim();
+    }
+
+    // -----------------------------------------------------------------
+    // Limpeza e validação final
+    // -----------------------------------------------------------------
+    titulo = titulo || musica;
+    nomeArtista = nomeArtista || artista;
+    tom = (tom || 'C').replace(/[^A-Gb#m]/g, '') || 'C';
+
+    // Remove tablatura (linhas E|---) para deixar só acordes e letra
+    const linhas = cifra.split('\n');
+    const semTab = linhas.filter(l => !l.match(/^[EADGBe]\|[-\d\/\\hpb~.]+/)).join('\n');
+    if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
+
+    if (!cifra.trim()) {
+      return res.status(404).json({
+        erro: 'Cifra não encontrada. A página pode ter mudado ou a música não tem cifra disponível.',
+        url: pageUrl,
+      });
+    }
+
+    res.json({ titulo, artista: nomeArtista, tom, cifra: cifra.trim(), url: pageUrl });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
-    res.status(502).json({ erro: 'Erro ao obter cifra', detalhe: e.message });
+    res.status(502).json({ erro: 'Erro ao obter cifra: ' + e.message });
   }
 });
 
