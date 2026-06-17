@@ -437,74 +437,69 @@ app.get('/hinos/stats', exigirApiKey, async (req, res) => {
   }
 });
 
- — uso pessoal via dashboard)
-// A cifraclub-api precisa estar rodando localmente ou em outro serviço.
-// Configure a variável de ambiente CIFRACLUB_API_URL com a URL base.
-// Ex: CIFRACLUB_API_URL=http://localhost:3001
-// Se não configurada, a rota retorna erro orientando o setup.
+// ---------------------------------------------------------------------
+// Busca de cifra — scraping direto do CifraClub (uso pessoal)
+// Não requer variável de ambiente. Requer: npm install cheerio
 // ---------------------------------------------------------------------
 
-const CIFRACLUB_API_URL = process.env.CIFRACLUB_API_URL;
+const cheerio = require('cheerio');
+
+const HEADERS_CC = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept-Language': 'pt-BR,pt;q=0.9',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+};
 
 // GET /cifra/buscar?q=nome+da+musica
-// Retorna lista de resultados para seleção
 app.get('/cifra/buscar', async (req, res) => {
-  if (!CIFRACLUB_API_URL) {
-    return res.status(503).json({
-      erro: 'CIFRACLUB_API_URL não configurada. Adicione a variável de ambiente no Render.',
-    });
-  }
   const { q } = req.query;
   if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
-
   try {
-    const resp = await fetch(
-      `${CIFRACLUB_API_URL}/search?q=${encodeURIComponent(q)}`,
-      { headers: { 'User-Agent': 'cifras-app-dashboard/1.0' }, timeout: 10000 }
-    );
-    if (!resp.ok) throw new Error(`Status ${resp.status}`);
-    const data = await resp.json();
-    res.json(data);
+    const url = `https://www.cifraclub.com.br/search/?q=${encodeURIComponent(q)}`;
+    const resp = await fetch(url, { headers: HEADERS_CC, signal: AbortSignal.timeout(12000) });
+    if (!resp.ok) throw new Error(`CifraClub retornou ${resp.status}`);
+    const html = await resp.text();
+    const $ = cheerio.load(html);
+    const resultados = [];
+    $('a').each((i, el) => {
+      if (resultados.length >= 15) return false;
+      const href = $(el).attr('href') || '';
+      const match = href.replace('https://www.cifraclub.com.br', '').match(/^\/([^\/]+)\/([^\/]+)\/?$/);
+      if (!match) return;
+      const texto = $(el).text().trim();
+      if (!texto || texto.length < 3) return;
+      resultados.push({ name: texto, artistSlug: match[1], slug: match[2], url: `https://www.cifraclub.com.br/${match[1]}/${match[2]}/` });
+    });
+    res.json(resultados);
   } catch (e) {
     console.error('[cifra] buscar:', e.message);
     res.status(502).json({ erro: 'Erro ao buscar cifra', detalhe: e.message });
   }
 });
 
-// GET /cifra/obter?artista=xxx&musica=yyy
-// Retorna a cifra completa de uma música específica
+// GET /cifra/obter?artista=gabriela-rocha&musica=bondade-de-deus
 app.get('/cifra/obter', async (req, res) => {
-  if (!CIFRACLUB_API_URL) {
-    return res.status(503).json({
-      erro: 'CIFRACLUB_API_URL não configurada.',
-    });
-  }
   const { artista, musica } = req.query;
-  if (!artista || !musica) {
-    return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
-  }
-
+  if (!artista || !musica) return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
   try {
-    const resp = await fetch(
-      `${CIFRACLUB_API_URL}/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}`,
-      { headers: { 'User-Agent': 'cifras-app-dashboard/1.0' }, timeout: 10000 }
-    );
-    if (!resp.ok) throw new Error(`Status ${resp.status}`);
-    const data = await resp.json();
-
-    // Normaliza a resposta para o formato do dashboard
-    res.json({
-      titulo: data.name || data.titulo || musica,
-      artista: data.artist || data.artista || artista,
-      tom: data.key || data.tom || 'C',
-      cifra: data.chord || data.cifra || data.content || '',
-    });
+    const url = `https://www.cifraclub.com.br/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
+    const resp = await fetch(url, { headers: HEADERS_CC, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) throw new Error(`CifraClub retornou ${resp.status}`);
+    const html = await resp.text();
+    const $ = cheerio.load(html);
+    const titulo = $('h1.t1').first().text().trim() || $('h1').first().text().trim() || musica;
+    const nomeArtista = $('h2.t3 a').first().text().trim() || artista;
+    const tom = $('.cifra_tom, .tom-atual').first().text().trim().replace(/[^A-Gb#m]/g, '') || 'C';
+    const elemCifra = $('pre.cifra, #cifra_cnt pre, pre').first();
+    elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
+    const cifra = elemCifra.text().trim();
+    if (!cifra) return res.status(404).json({ erro: 'Cifra não encontrada nesta página.' });
+    res.json({ titulo, artista: nomeArtista, tom, cifra, url });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
     res.status(502).json({ erro: 'Erro ao obter cifra', detalhe: e.message });
   }
 });
-
 
 // A key da ABíbliaDigital fica segura no servidor, não exposta no app.
 // Configure a variável de ambiente BIBLIA_TOKEN no Render com o token
