@@ -494,9 +494,10 @@ app.get('/cifra/buscar', async (req, res) => {
   }
 });
 
-// GET /cifra/obter?artista=gabriela-rocha&musica=bondade-de-deus
+// GET /cifra/obter?artista=gabriela-rocha&musica=bondade-de-deus&name=Bondade+de+Deus&artist=Gabriela+Rocha
+// name e artist são opcionais — se passados, usamos diretamente sem tentar extrair do HTML
 app.get('/cifra/obter', async (req, res) => {
-  const { artista, musica } = req.query;
+  const { artista, musica, name, artist } = req.query;
   if (!artista || !musica) return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
 
   try {
@@ -510,120 +511,90 @@ app.get('/cifra/obter', async (req, res) => {
     const html = await pageResp.text();
     const $ = cheerio.load(html);
 
-    // -----------------------------------------------------------------
-    // 1. Tenta extrair do JSON embutido nos scripts (Next.js __NEXT_DATA__)
-    // -----------------------------------------------------------------
-    let titulo = '';
-    let nomeArtista = '';
+    // Título e artista — usa os parâmetros passados pela busca (mais confiável)
+    let titulo = (name || '').trim();
+    let nomeArtista = (artist || '').trim();
+
+    // Se não foram passados, tenta extrair do __NEXT_DATA__
+    if (!titulo || !nomeArtista) {
+      const nextData = $('script#__NEXT_DATA__').html();
+      if (nextData) {
+        try {
+          const json = JSON.parse(nextData);
+          const props = json?.props?.pageProps || {};
+          titulo = titulo || props.song?.name || props.name || '';
+          nomeArtista = nomeArtista || props.artist?.name || props.artistName || '';
+        } catch (_) {}
+      }
+    }
+
+    // Último fallback para título
+    if (!titulo) {
+      titulo = musica.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+    if (!nomeArtista) {
+      nomeArtista = artista.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    // Tom — tenta extrair do JSON embutido
     let tom = '';
     let cifra = '';
 
+    // __NEXT_DATA__ para cifra e tom
     const nextData = $('script#__NEXT_DATA__').html();
     if (nextData) {
       try {
         const json = JSON.parse(nextData);
-        // Caminha pelo objeto até encontrar os dados da cifra
-        const props = json?.props?.pageProps || json?.props || {};
-        titulo = props.song?.name || props.cifra?.name || props.name || '';
-        nomeArtista = props.artist?.name || props.cifra?.artist?.name || props.artistName || '';
-        tom = props.song?.key || props.cifra?.key || props.key || '';
-        cifra = props.song?.chord || props.cifra?.chord || props.chord || '';
+        const props = json?.props?.pageProps || {};
+        tom = props.song?.key || props.key || '';
+        cifra = props.song?.chord || props.chord || '';
       } catch (_) {}
     }
 
-    // -----------------------------------------------------------------
-    // 2. Tenta extrair de outros blocos JSON na página
-    // -----------------------------------------------------------------
+    // Busca "chord" em qualquer script da página
     if (!cifra) {
       $('script').each((_, el) => {
+        if (cifra) return;
         const txt = $(el).html() || '';
-
-        // Padrão: var CIFRA_DATA = {...}
-        const m1 = txt.match(/(?:CIFRA_DATA|cifraData|songData)\s*=\s*({[\s\S]{20,5000}})/);
-        if (m1) {
-          try {
-            const d = JSON.parse(m1[1]);
-            titulo = titulo || d.name || d.titulo || '';
-            nomeArtista = nomeArtista || d.artist?.name || d.artista || '';
-            tom = tom || d.key || d.tom || '';
-            cifra = cifra || d.chord || d.cifra || '';
-          } catch (_) {}
+        const m = txt.match(/"chord"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (m) {
+          cifra = m[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\\\/g, '\\')
+            .replace(/\\"/g, '"');
         }
-
-        // Padrão: "chord":"..." no JSON inline
-        if (!cifra) {
-          const m2 = txt.match(/"chord"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (m2) cifra = m2[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\').replace(/\\"/g, '"');
-        }
-        if (!titulo) {
-          const m3 = txt.match(/"(?:name|titulo)"\s*:\s*"([^"]+)"/);
-          if (m3) titulo = m3[1];
+        if (!tom) {
+          const mt = txt.match(/"(?:key|tom)"\s*:\s*"([A-Gb#m]{1,4})"/);
+          if (mt) tom = mt[1];
         }
       });
     }
 
-    // -----------------------------------------------------------------
-    // 3. Extrai meta tags — sempre disponíveis mesmo em SPA
-    // -----------------------------------------------------------------
-    // Título — og:title é sempre renderizado no SSR do Next.js
-    if (!titulo) {
-      titulo = $('meta[property="og:title"]').attr('content') || '';
-      // Remove sufixos do site
-      titulo = titulo.replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-      // Se ainda vazio, usa o <title>
-      if (!titulo) {
-        titulo = $('title').text().replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-      }
-    }
-
-    if (!nomeArtista) {
-      // og:description costuma ter "Cifra de ARTISTA"
-      const desc = $('meta[property="og:description"]').attr('content') || '';
-      const mArt = desc.match(/(?:cifra|acorde|tab)\s+(?:de|do|da)\s+(.+?)(?:\s*[-|]|$)/i);
-      nomeArtista = mArt?.[1]?.trim()
-        || $('meta[name="author"]').attr('content')?.trim()
-        || artista;
-    }
-
-    // Tom — meta específica do CifraClub
-    if (!tom) {
-      tom = $('meta[itemprop="musicalKey"]').attr('content')
-        || $('meta[property="music:musician"]').attr('content')
-        || '';
-    }
-
-    // -----------------------------------------------------------------
-    // 4. Scraping direto do HTML como último recurso
-    // -----------------------------------------------------------------
+    // Scraping HTML como último recurso para a cifra
     if (!cifra) {
-      // Tom via elementos HTML
-      if (!tom) {
-        tom = $('.cifra_tom b, .cifra_tom, .tom-atual, [data-key]').first().text().trim();
+      const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, pre').first();
+      if (elemCifra.length) {
+        elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
+        cifra = elemCifra.text().trim();
       }
-
-      // Cifra — elemento pre com os acordes
-      const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, [class*="cifra"] pre, pre').first();
-      elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
-      cifra = elemCifra.text().trim();
     }
 
-    // -----------------------------------------------------------------
-    // Limpeza e validação final
-    // -----------------------------------------------------------------
-    titulo = titulo || musica;
-    nomeArtista = nomeArtista || artista;
-    tom = (tom || 'C').replace(/[^A-Gb#m]/g, '') || 'C';
+    if (!tom) {
+      tom = $('.cifra_tom b, .cifra_tom, .tom-atual').first().text().trim() || 'C';
+    }
 
-    // Remove tablatura (linhas E|---) para deixar só acordes e letra
-    const linhas = cifra.split('\n');
-    const semTab = linhas.filter(l => !l.match(/^[EADGBe]\|[-\d\/\\hpb~.]+/)).join('\n');
-    if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
+    tom = tom.replace(/[^A-Gb#m]/g, '') || 'C';
+
+    // Remove tablatura (linhas E|---)
+    if (cifra) {
+      const linhas = cifra.split('\n');
+      const semTab = linhas.filter(l => !l.match(/^[EADGBe]\|[-\d\/\\hpb~.]+/)).join('\n');
+      if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
+    }
 
     if (!cifra.trim()) {
-      return res.status(404).json({
-        erro: 'Cifra não encontrada. A página pode ter mudado ou a música não tem cifra disponível.',
-        url: pageUrl,
-      });
+      return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
     }
 
     res.json({ titulo, artista: nomeArtista, tom, cifra: cifra.trim(), url: pageUrl });
@@ -632,6 +603,7 @@ app.get('/cifra/obter', async (req, res) => {
     res.status(502).json({ erro: 'Erro ao obter cifra: ' + e.message });
   }
 });
+
 
 // A key da ABíbliaDigital fica segura no servidor, não exposta no app.
 // Configure a variável de ambiente BIBLIA_TOKEN no Render com o token
