@@ -438,38 +438,92 @@ app.get('/hinos/stats', exigirApiKey, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------
-// Busca de cifra — scraping direto do CifraClub (uso pessoal)
-// Não requer variável de ambiente. Requer: npm install cheerio
+// Busca de cifra — API interna do CifraClub (uso pessoal)
+// Usa os mesmos endpoints JSON que o site usa internamente.
+// Requer: npm install cheerio
 // ---------------------------------------------------------------------
 
 const cheerio = require('cheerio');
 
 const HEADERS_CC = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
   'Accept-Language': 'pt-BR,pt;q=0.9',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Referer': 'https://www.cifraclub.com.br/',
+  'Origin': 'https://www.cifraclub.com.br',
 };
 
 // GET /cifra/buscar?q=nome+da+musica
+// Usa a API de autocomplete do CifraClub que retorna JSON estruturado
 app.get('/cifra/buscar', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
   try {
-    const url = `https://www.cifraclub.com.br/search/?q=${encodeURIComponent(q)}`;
+    // Endpoint de autocomplete/busca usado internamente pelo site
+    const url = `https://api.cifraclub.com.br/api/v1/search/songs/?q=${encodeURIComponent(q)}&limit=15`;
     const resp = await fetch(url, { headers: HEADERS_CC, signal: AbortSignal.timeout(12000) });
-    if (!resp.ok) throw new Error(`CifraClub retornou ${resp.status}`);
-    const html = await resp.text();
+
+    if (resp.ok) {
+      const data = await resp.json();
+      // Normaliza para o formato que o app espera
+      const resultados = (data.results || data.songs || data || []).map(item => ({
+        name: item.name || item.titulo || item.song || '',
+        artist: item.artist?.name || item.artista || '',
+        artistSlug: item.artist?.url || item.artistSlug || '',
+        slug: item.url || item.slug || '',
+        url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
+      })).filter(r => r.name && r.slug);
+      return res.json(resultados);
+    }
+
+    // Fallback: scraping da página de busca HTML
+    const urlHtml = `https://www.cifraclub.com.br/search/?q=${encodeURIComponent(q)}`;
+    const respHtml = await fetch(urlHtml, {
+      headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!respHtml.ok) throw new Error(`HTTP ${respHtml.status}`);
+    const html = await respHtml.text();
     const $ = cheerio.load(html);
     const resultados = [];
-    $('a').each((i, el) => {
-      if (resultados.length >= 15) return false;
-      const href = $(el).attr('href') || '';
-      const match = href.replace('https://www.cifraclub.com.br', '').match(/^\/([^\/]+)\/([^\/]+)\/?$/);
-      if (!match) return;
-      const texto = $(el).text().trim();
-      if (!texto || texto.length < 3) return;
-      resultados.push({ name: texto, artistSlug: match[1], slug: match[2], url: `https://www.cifraclub.com.br/${match[1]}/${match[2]}/` });
+
+    // Tenta extrair JSON embutido no script da página
+    let encontrouJson = false;
+    $('script').each((_, el) => {
+      const txt = $(el).html() || '';
+      const m = txt.match(/"songs"\s*:\s*(\[[\s\S]*?\])/);
+      if (m && !encontrouJson) {
+        try {
+          const songs = JSON.parse(m[1]);
+          songs.slice(0, 15).forEach(s => {
+            resultados.push({
+              name: s.name || s.titulo || '',
+              artist: s.artist?.name || s.artista || '',
+              artistSlug: s.artist?.url || '',
+              slug: s.url || s.slug || '',
+              url: `https://www.cifraclub.com.br/${s.artist?.url || ''}/${s.url || s.slug || ''}/`,
+            });
+          });
+          encontrouJson = true;
+        } catch (_) {}
+      }
     });
+
+    // Último fallback: links com padrão /artista/musica/
+    if (resultados.length === 0) {
+      $('a[href]').each((_, el) => {
+        if (resultados.length >= 15) return false;
+        const href = $(el).attr('href') || '';
+        const m = href.match(/^https?:\/\/www\.cifraclub\.com\.br\/([a-z0-9-]+)\/([a-z0-9-]+)\/?$/);
+        if (!m) return;
+        const ignorar = ['search', 'musico', 'artistas', 'bandas', 'cifras', 'tabs', 'news'];
+        if (ignorar.includes(m[1])) return;
+        const texto = $(el).text().replace(/\d+[A-G#m]+Opções/g, '').trim();
+        if (!texto || texto.length < 3 || texto.length > 80) return;
+        resultados.push({ name: texto, artistSlug: m[1], slug: m[2], url: `https://www.cifraclub.com.br/${m[1]}/${m[2]}/` });
+      });
+    }
+
     res.json(resultados);
   } catch (e) {
     console.error('[cifra] buscar:', e.message);
@@ -478,23 +532,61 @@ app.get('/cifra/buscar', async (req, res) => {
 });
 
 // GET /cifra/obter?artista=gabriela-rocha&musica=bondade-de-deus
+// Tenta a API JSON do CifraClub; se falhar, faz scraping do HTML
 app.get('/cifra/obter', async (req, res) => {
   const { artista, musica } = req.query;
   if (!artista || !musica) return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
+
   try {
-    const url = `https://www.cifraclub.com.br/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
-    const resp = await fetch(url, { headers: HEADERS_CC, signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) throw new Error(`CifraClub retornou ${resp.status}`);
-    const html = await resp.text();
+    // Tenta API JSON interna primeiro
+    const apiUrl = `https://api.cifraclub.com.br/api/v1/songs/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
+    const apiResp = await fetch(apiUrl, { headers: HEADERS_CC, signal: AbortSignal.timeout(10000) }).catch(() => null);
+
+    if (apiResp?.ok) {
+      const data = await apiResp.json();
+      const cifra = (data.chord || data.cifra || data.content || '').trim();
+      if (cifra) {
+        return res.json({
+          titulo: data.name || data.titulo || musica,
+          artista: data.artist?.name || data.artista || artista,
+          tom: (data.key || data.tom || 'C').replace(/[^A-Gb#m]/g, '') || 'C',
+          cifra,
+          url: `https://www.cifraclub.com.br/${artista}/${musica}/`,
+        });
+      }
+    }
+
+    // Fallback: scraping HTML
+    const pageUrl = `https://www.cifraclub.com.br/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
+    const pageResp = await fetch(pageUrl, {
+      headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!pageResp.ok) throw new Error(`CifraClub retornou ${pageResp.status}`);
+
+    const html = await pageResp.text();
     const $ = cheerio.load(html);
-    const titulo = $('h1.t1').first().text().trim() || $('h1').first().text().trim() || musica;
-    const nomeArtista = $('h2.t3 a').first().text().trim() || artista;
-    const tom = $('.cifra_tom, .tom-atual').first().text().trim().replace(/[^A-Gb#m]/g, '') || 'C';
-    const elemCifra = $('pre.cifra, #cifra_cnt pre, pre').first();
+
+    // Título e artista
+    const titulo = $('h1.t1, h1').first().text().trim() || musica;
+    const nomeArtista = $('h2.t3 a, .artist-name a, h2 a').first().text().trim() || artista;
+
+    // Tom
+    const tom = ($('.cifra_tom, .tom-atual, [data-key]').first().text().trim()
+      || $('select#cifra_tom option[selected]').first().text().trim()
+      || 'C').replace(/[^A-Gb#m]/g, '') || 'C';
+
+    // Cifra — converte <b>Acorde</b> para [Acorde]
+    const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, pre').first();
+    if (!elemCifra.length) {
+      return res.status(404).json({ erro: 'Cifra não encontrada. Verifique o artista e o nome da música.' });
+    }
     elemCifra.find('b').each((_, el) => { $(el).replaceWith(`[${$(el).text()}]`); });
     const cifra = elemCifra.text().trim();
+
     if (!cifra) return res.status(404).json({ erro: 'Cifra não encontrada nesta página.' });
-    res.json({ titulo, artista: nomeArtista, tom, cifra, url });
+
+    res.json({ titulo, artista: nomeArtista, tom, cifra, url: pageUrl });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
     res.status(502).json({ erro: 'Erro ao obter cifra', detalhe: e.message });
