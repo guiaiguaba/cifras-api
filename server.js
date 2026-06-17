@@ -563,26 +563,43 @@ app.get('/cifra/obter', async (req, res) => {
     }
 
     // -----------------------------------------------------------------
-    // 3. Fallback: scraping direto do HTML
+    // 3. Extrai meta tags — sempre disponíveis mesmo em SPA
+    // -----------------------------------------------------------------
+    // Título — og:title é sempre renderizado no SSR do Next.js
+    if (!titulo) {
+      titulo = $('meta[property="og:title"]').attr('content') || '';
+      // Remove sufixos do site
+      titulo = titulo.replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
+      // Se ainda vazio, usa o <title>
+      if (!titulo) {
+        titulo = $('title').text().replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
+      }
+    }
+
+    if (!nomeArtista) {
+      // og:description costuma ter "Cifra de ARTISTA"
+      const desc = $('meta[property="og:description"]').attr('content') || '';
+      const mArt = desc.match(/(?:cifra|acorde|tab)\s+(?:de|do|da)\s+(.+?)(?:\s*[-|]|$)/i);
+      nomeArtista = mArt?.[1]?.trim()
+        || $('meta[name="author"]').attr('content')?.trim()
+        || artista;
+    }
+
+    // Tom — meta específica do CifraClub
+    if (!tom) {
+      tom = $('meta[itemprop="musicalKey"]').attr('content')
+        || $('meta[property="music:musician"]').attr('content')
+        || '';
+    }
+
+    // -----------------------------------------------------------------
+    // 4. Scraping direto do HTML como último recurso
     // -----------------------------------------------------------------
     if (!cifra) {
-      // Título — meta tag é mais confiável que h1
-      titulo = titulo
-        || $('meta[property="og:title"]').attr('content')?.replace(' - Cifra Club', '').replace(' | Cifra Club', '').trim()
-        || $('title').text().replace(' - Cifra Club', '').replace(' | Cifra Club', '').trim()
-        || musica;
-
-      nomeArtista = nomeArtista
-        || $('h2.t3 a').first().text().trim()
-        || $('[itemprop="byArtist"] [itemprop="name"]').first().text().trim()
-        || artista;
-
-      // Tom — meta ou elemento específico
-      tom = tom
-        || $('meta[itemprop="musicalKey"]').attr('content')
-        || $('.cifra_tom b').first().text().trim()
-        || $('.tom-atual').first().text().trim()
-        || 'C';
+      // Tom via elementos HTML
+      if (!tom) {
+        tom = $('.cifra_tom b, .cifra_tom, .tom-atual, [data-key]').first().text().trim();
+      }
 
       // Cifra — elemento pre com os acordes
       const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, [class*="cifra"] pre, pre').first();
