@@ -454,29 +454,59 @@ const HEADERS_CC = {
 };
 
 // GET /cifra/buscar?q=nome+da+musica
-// Usa a API de autocomplete do CifraClub que retorna JSON estruturado
+// Usa o endpoint de autocomplete do CifraClub (mesmo usado pelo site ao digitar na busca)
 app.get('/cifra/buscar', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
   try {
-    // Endpoint de autocomplete/busca usado internamente pelo site
-    const url = `https://api.cifraclub.com.br/api/v1/search/songs/?q=${encodeURIComponent(q)}&limit=15`;
-    const resp = await fetch(url, { headers: HEADERS_CC, signal: AbortSignal.timeout(12000) });
+    // Endpoint de autocomplete — retorna JSON limpo com artista e slug
+    const url = `https://www.cifraclub.com.br/api/search/suggest/?term=${encodeURIComponent(q)}&limit=15`;
+    const resp = await fetch(url, {
+      headers: { ...HEADERS_CC, 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(12000),
+    });
 
     if (resp.ok) {
       const data = await resp.json();
-      // Normaliza para o formato que o app espera
-      const resultados = (data.results || data.songs || data || []).map(item => ({
-        name: item.name || item.titulo || item.song || '',
-        artist: item.artist?.name || item.artista || '',
-        artistSlug: item.artist?.url || item.artistSlug || '',
-        slug: item.url || item.slug || '',
-        url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
-      })).filter(r => r.name && r.slug);
-      return res.json(resultados);
+      // Estrutura: { results: [ { name, url, artist: { name, url } } ] }
+      const itens = data.results || data.songs || data || [];
+      const resultados = itens
+        .map(item => ({
+          name: item.name || item.titulo || '',
+          artist: item.artist?.name || item.artista || '',
+          artistSlug: item.artist?.url || item.artistSlug || '',
+          slug: item.url || item.slug || '',
+          url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
+        }))
+        .filter(r => r.name && r.slug && r.artistSlug && !r.slug.includes('?'));
+      if (resultados.length > 0) return res.json(resultados);
     }
 
-    // Fallback: scraping da página de busca HTML
+    // Fallback: endpoint alternativo de busca
+    const url2 = `https://www.cifraclub.com.br/api/search/?q=${encodeURIComponent(q)}&type=cifra&limit=15`;
+    const resp2 = await fetch(url2, {
+      headers: { ...HEADERS_CC, 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(12000),
+    });
+
+    if (resp2.ok) {
+      const data2 = await resp2.json();
+      const itens2 = data2.results || data2.cifras || data2.songs || data2 || [];
+      if (Array.isArray(itens2) && itens2.length > 0) {
+        const resultados2 = itens2
+          .map(item => ({
+            name: item.name || item.titulo || item.song || '',
+            artist: item.artist?.name || item.artista || '',
+            artistSlug: item.artist?.url || item.artistSlug || (item.url || '').split('/')[1] || '',
+            slug: item.url || item.slug || '',
+            url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
+          }))
+          .filter(r => r.name && r.slug && !r.slug.includes('?'));
+        if (resultados2.length > 0) return res.json(resultados2);
+      }
+    }
+
+    // Último fallback: scraping HTML com regex nos scripts
     const urlHtml = `https://www.cifraclub.com.br/search/?q=${encodeURIComponent(q)}`;
     const respHtml = await fetch(urlHtml, {
       headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml' },
@@ -484,50 +514,45 @@ app.get('/cifra/buscar', async (req, res) => {
     });
     if (!respHtml.ok) throw new Error(`HTTP ${respHtml.status}`);
     const html = await respHtml.text();
-    const $ = cheerio.load(html);
-    const resultados = [];
 
-    // Tenta extrair JSON embutido no script da página
-    let encontrouJson = false;
-    $('script').each((_, el) => {
-      const txt = $(el).html() || '';
-      const m = txt.match(/"songs"\s*:\s*(\[[\s\S]*?\])/);
-      if (m && !encontrouJson) {
+    // Extrai JSON de qualquer variável de estado na página
+    const resultados3 = [];
+    const padroes = [
+      /"songs"\s*:\s*(\[[^\]]{10,}\])/g,
+      /"cifras"\s*:\s*(\[[^\]]{10,}\])/g,
+      /__INITIAL_STATE__[^{]*({.{100,5000}})/g,
+    ];
+    for (const regex of padroes) {
+      let m;
+      while ((m = regex.exec(html)) !== null && resultados3.length < 15) {
         try {
-          const songs = JSON.parse(m[1]);
-          songs.slice(0, 15).forEach(s => {
-            resultados.push({
-              name: s.name || s.titulo || '',
-              artist: s.artist?.name || s.artista || '',
-              artistSlug: s.artist?.url || '',
-              slug: s.url || s.slug || '',
-              url: `https://www.cifraclub.com.br/${s.artist?.url || ''}/${s.url || s.slug || ''}/`,
+          const arr = JSON.parse(m[1]);
+          if (!Array.isArray(arr)) continue;
+          arr.forEach(s => {
+            if (resultados3.length >= 15) return;
+            const artistSlug = s.artist?.url || s.artistUrl || '';
+            const slug = s.url || s.slug || '';
+            if (!s.name || !slug || !artistSlug || slug.includes('?')) return;
+            resultados3.push({
+              name: s.name,
+              artist: s.artist?.name || '',
+              artistSlug,
+              slug,
+              url: `https://www.cifraclub.com.br/${artistSlug}/${slug}/`,
             });
           });
-          encontrouJson = true;
         } catch (_) {}
       }
-    });
-
-    // Último fallback: links com padrão /artista/musica/
-    if (resultados.length === 0) {
-      $('a[href]').each((_, el) => {
-        if (resultados.length >= 15) return false;
-        const href = $(el).attr('href') || '';
-        const m = href.match(/^https?:\/\/www\.cifraclub\.com\.br\/([a-z0-9-]+)\/([a-z0-9-]+)\/?$/);
-        if (!m) return;
-        const ignorar = ['search', 'musico', 'artistas', 'bandas', 'cifras', 'tabs', 'news'];
-        if (ignorar.includes(m[1])) return;
-        const texto = $(el).text().replace(/\d+[A-G#m]+Opções/g, '').trim();
-        if (!texto || texto.length < 3 || texto.length > 80) return;
-        resultados.push({ name: texto, artistSlug: m[1], slug: m[2], url: `https://www.cifraclub.com.br/${m[1]}/${m[2]}/` });
-      });
+      if (resultados3.length > 0) break;
     }
 
-    res.json(resultados);
+    if (resultados3.length > 0) return res.json(resultados3);
+
+    // Se chegou aqui, não encontrou nada
+    res.json([]);
   } catch (e) {
     console.error('[cifra] buscar:', e.message);
-    res.status(502).json({ erro: 'Erro ao buscar cifra', detalhe: e.message });
+    res.status(502).json({ erro: 'Erro ao buscar cifra: ' + e.message });
   }
 });
 
