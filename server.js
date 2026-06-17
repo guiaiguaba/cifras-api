@@ -454,102 +454,40 @@ const HEADERS_CC = {
 };
 
 // GET /cifra/buscar?q=nome+da+musica
-// Usa o endpoint de autocomplete do CifraClub (mesmo usado pelo site ao digitar na busca)
+// Usa o endpoint Solr do CifraClub — retorna JSON com docs de músicas (tipo=2)
 app.get('/cifra/buscar', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
   try {
-    // Endpoint de autocomplete — retorna JSON limpo com artista e slug
-    const url = `https://www.cifraclub.com.br/api/search/suggest/?term=${encodeURIComponent(q)}&limit=15`;
+    const url = `https://solr.sscdn.co/cc/c7/?q=${encodeURIComponent(q)}&limit=30&callback=suggest_callback`;
     const resp = await fetch(url, {
-      headers: { ...HEADERS_CC, 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(12000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Referer': 'https://www.cifraclub.com.br/',
+      },
+      signal: AbortSignal.timeout(10000),
     });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-    if (resp.ok) {
-      const data = await resp.json();
-      // Estrutura: { results: [ { name, url, artist: { name, url } } ] }
-      const itens = data.results || data.songs || data || [];
-      const resultados = itens
-        .map(item => ({
-          name: item.name || item.titulo || '',
-          artist: item.artist?.name || item.artista || '',
-          artistSlug: item.artist?.url || item.artistSlug || '',
-          slug: item.url || item.slug || '',
-          url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
-        }))
-        .filter(r => r.name && r.slug && r.artistSlug && !r.slug.includes('?'));
-      if (resultados.length > 0) return res.json(resultados);
-    }
+    // Resposta é JSONP: suggest_callback({...}) — remove o wrapper
+    const texto = await resp.text();
+    const jsonStr = texto.replace(/^suggest_callback\s*\(/, '').replace(/\);\s*$/, '').trim();
+    const data = JSON.parse(jsonStr);
 
-    // Fallback: endpoint alternativo de busca
-    const url2 = `https://www.cifraclub.com.br/api/search/?q=${encodeURIComponent(q)}&type=cifra&limit=15`;
-    const resp2 = await fetch(url2, {
-      headers: { ...HEADERS_CC, 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(12000),
-    });
+    // Filtra só músicas (tipo=2) — tipo=1 são artistas, tipo=5 são playlists, tipo=6 são álbuns
+    const docs = (data.response?.docs || []).filter(d => d.tipo === '2' && d.url && d.dns);
 
-    if (resp2.ok) {
-      const data2 = await resp2.json();
-      const itens2 = data2.results || data2.cifras || data2.songs || data2 || [];
-      if (Array.isArray(itens2) && itens2.length > 0) {
-        const resultados2 = itens2
-          .map(item => ({
-            name: item.name || item.titulo || item.song || '',
-            artist: item.artist?.name || item.artista || '',
-            artistSlug: item.artist?.url || item.artistSlug || (item.url || '').split('/')[1] || '',
-            slug: item.url || item.slug || '',
-            url: `https://www.cifraclub.com.br/${item.artist?.url || ''}/${item.url || ''}/`,
-          }))
-          .filter(r => r.name && r.slug && !r.slug.includes('?'));
-        if (resultados2.length > 0) return res.json(resultados2);
-      }
-    }
+    const resultados = docs.map(d => ({
+      name: d.txt || '',
+      artist: d.art || '',
+      artistSlug: d.dns || '',
+      slug: d.url || '',
+      img: d.imgm || '',
+      url: `https://www.cifraclub.com.br/${d.dns}/${d.url}/`,
+    }));
 
-    // Último fallback: scraping HTML com regex nos scripts
-    const urlHtml = `https://www.cifraclub.com.br/search/?q=${encodeURIComponent(q)}`;
-    const respHtml = await fetch(urlHtml, {
-      headers: { ...HEADERS_CC, 'Accept': 'text/html,application/xhtml+xml' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!respHtml.ok) throw new Error(`HTTP ${respHtml.status}`);
-    const html = await respHtml.text();
-
-    // Extrai JSON de qualquer variável de estado na página
-    const resultados3 = [];
-    const padroes = [
-      /"songs"\s*:\s*(\[[^\]]{10,}\])/g,
-      /"cifras"\s*:\s*(\[[^\]]{10,}\])/g,
-      /__INITIAL_STATE__[^{]*({.{100,5000}})/g,
-    ];
-    for (const regex of padroes) {
-      let m;
-      while ((m = regex.exec(html)) !== null && resultados3.length < 15) {
-        try {
-          const arr = JSON.parse(m[1]);
-          if (!Array.isArray(arr)) continue;
-          arr.forEach(s => {
-            if (resultados3.length >= 15) return;
-            const artistSlug = s.artist?.url || s.artistUrl || '';
-            const slug = s.url || s.slug || '';
-            if (!s.name || !slug || !artistSlug || slug.includes('?')) return;
-            resultados3.push({
-              name: s.name,
-              artist: s.artist?.name || '',
-              artistSlug,
-              slug,
-              url: `https://www.cifraclub.com.br/${artistSlug}/${slug}/`,
-            });
-          });
-        } catch (_) {}
-      }
-      if (resultados3.length > 0) break;
-    }
-
-    if (resultados3.length > 0) return res.json(resultados3);
-
-    // Se chegou aqui, não encontrou nada
-    res.json([]);
+    res.json(resultados);
   } catch (e) {
     console.error('[cifra] buscar:', e.message);
     res.status(502).json({ erro: 'Erro ao buscar cifra: ' + e.message });
