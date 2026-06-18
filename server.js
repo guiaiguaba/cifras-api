@@ -581,10 +581,22 @@ app.get('/cifra/obter', async (req, res) => {
     }
 
     if (!tom) {
-      tom = $('.cifra_tom b, .cifra_tom, .tom-atual').first().text().trim() || 'C';
+      tom = $('.cifra_tom b, .cifra_tom, .tom-atual').first().text().trim();
     }
 
-    tom = tom.replace(/[^A-Gb#m]/g, '') || 'C';
+    // Fallback final: extrai o tom do primeiro acorde encontrado na própria cifra
+    // Cifras têm acordes entre colchetes [C], [Am], [G7] etc — o primeiro costuma ser o tom da música
+    if (!tom && cifra) {
+      const primeiroAcorde = cifra.match(/\[([A-G][b#]?m?(?:7|maj7|sus2|sus4|9|11|13|dim|aug|add\d)?(?:\/[A-G][b#]?)?)\]/);
+      if (primeiroAcorde) tom = primeiroAcorde[1];
+    }
+
+    tom = (tom || 'C').replace(/[^A-Gb#m0-9]/g, '');
+    // Normaliza: mantém só a parte tonal básica (ex: "Am7" vira "Am", "C/E" vira "C")
+    const matchTomSimples = tom.match(/^([A-G][b#]?m?)/);
+    tom = matchTomSimples ? matchTomSimples[1] : 'C';
+
+    console.log(`[cifra] obter — tom extraído: "${tom}" para ${titulo}`);
 
     // Remove tablatura (linhas E|---)
     if (cifra) {
@@ -593,11 +605,70 @@ app.get('/cifra/obter', async (req, res) => {
       if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
     }
 
+    // Extrai YouTube ID da página
+    let youtubeId = '';
+    // Tenta __NEXT_DATA__ primeiro
+    if (!youtubeId && nextData) {
+      try {
+        const json = JSON.parse(nextData);
+        const props = json?.props?.pageProps || {};
+        youtubeId = props.song?.youtubeId || props.song?.youtube_id || props.youtubeId || '';
+      } catch (_) {}
+    }
+    // Fallback: busca nos scripts
+    if (!youtubeId) {
+      $('script').each((_, el) => {
+        if (youtubeId) return;
+        const txt = $(el).html() || '';
+        const m = txt.match(/"youtubeId"\s*:\s*"([a-zA-Z0-9_-]{11})"/);
+        if (m) youtubeId = m[1];
+      });
+    }
+    // Fallback: busca em iframes do YouTube
+    if (!youtubeId) {
+      $('iframe[src*="youtube"]').each((_, el) => {
+        if (youtubeId) return;
+        const src = $(el).attr('src') || '';
+        const m = src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
+        if (m) youtubeId = m[1];
+      });
+    }
+
     if (!cifra.trim()) {
       return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
     }
 
-    res.json({ titulo, artista: nomeArtista, tom, cifra: cifra.trim(), url: pageUrl });
+    // Monta link da letra (letras.mus.br usa o mesmo padrão de slugs do CifraClub)
+    const linkLetra = `https://m.letras.mus.br/${artista}/${musica}/`;
+
+    // Busca link de áudio no Deezer via busca pública
+    let linkAudio = '';
+    try {
+      const queryDeezer = `${nomeArtista} ${titulo}`;
+      const deezerResp = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(queryDeezer)}&limit=1`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (deezerResp.ok) {
+        const deezerData = await deezerResp.json();
+        if (deezerData.data && deezerData.data.length > 0) {
+          linkAudio = deezerData.data[0].link || '';
+        }
+      }
+    } catch (_) {
+      // Deezer indisponível — segue sem áudio
+    }
+
+    res.json({
+      titulo,
+      artista: nomeArtista,
+      tom,
+      cifra: cifra.trim(),
+      url: pageUrl,
+      linkCifra: pageUrl,
+      linkLetra,
+      linkAudio,
+      youtubeId: youtubeId || null,
+    });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
     res.status(502).json({ erro: 'Erro ao obter cifra: ' + e.message });
