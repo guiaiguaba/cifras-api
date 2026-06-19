@@ -3,6 +3,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
 const { pool, initSchema } = require('./db');
+const notificacoes = require('./notificacoes');
 
 const app = express();
 app.use(cors());
@@ -821,6 +822,7 @@ initSchema()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Cifras API rodando na porta ${PORT}`);
+      notificacoes.iniciarPolling();
     });
   })
   .catch((err) => {
