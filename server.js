@@ -608,32 +608,66 @@ app.get('/cifra/obter', async (req, res) => {
 
     // Extrai YouTube ID da página
     let youtubeId = '';
-    // Tenta __NEXT_DATA__ primeiro
+    let fonteYoutubeId = 'nenhuma';
+
+    // 1. Tenta __NEXT_DATA__ primeiro
     if (!youtubeId && nextData) {
       try {
         const json = JSON.parse(nextData);
         const props = json?.props?.pageProps || {};
-        youtubeId = props.song?.youtubeId || props.song?.youtube_id || props.youtubeId || '';
+        youtubeId = props.song?.youtubeId || props.song?.youtube_id || props.youtubeId
+          || props.song?.video?.youtubeId || props.video?.youtubeId || '';
+        if (youtubeId) fonteYoutubeId = '__NEXT_DATA__';
       } catch (_) {}
     }
-    // Fallback: busca nos scripts
+
+    // 2. Busca padrão "youtubeId":"..." em qualquer script da página
     if (!youtubeId) {
       $('script').each((_, el) => {
         if (youtubeId) return;
         const txt = $(el).html() || '';
-        const m = txt.match(/"youtubeId"\s*:\s*"([a-zA-Z0-9_-]{11})"/);
-        if (m) youtubeId = m[1];
+        const m = txt.match(/"youtube[_]?[iI]d"\s*:\s*"([a-zA-Z0-9_-]{11})"/);
+        if (m) { youtubeId = m[1]; fonteYoutubeId = 'script:youtubeId'; }
       });
     }
-    // Fallback: busca em iframes do YouTube
+
+    // 3. Busca URL completa do YouTube em qualquer script (watch?v= ou youtu.be/)
+    if (!youtubeId) {
+      $('script').each((_, el) => {
+        if (youtubeId) return;
+        const txt = $(el).html() || '';
+        const m = txt.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+        if (m) { youtubeId = m[1]; fonteYoutubeId = 'script:url-completa'; }
+      });
+    }
+
+    // 4. Busca em iframes do YouTube já renderizados no HTML
     if (!youtubeId) {
       $('iframe[src*="youtube"]').each((_, el) => {
         if (youtubeId) return;
         const src = $(el).attr('src') || '';
         const m = src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-        if (m) youtubeId = m[1];
+        if (m) { youtubeId = m[1]; fonteYoutubeId = 'iframe'; }
       });
     }
+
+    // 5. Busca em atributos data-* comuns de players customizados
+    if (!youtubeId) {
+      $('[data-video-id], [data-youtube-id], [data-yt-id]').each((_, el) => {
+        if (youtubeId) return;
+        const v = $(el).attr('data-video-id') || $(el).attr('data-youtube-id') || $(el).attr('data-yt-id');
+        if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) { youtubeId = v; fonteYoutubeId = 'data-attr'; }
+      });
+    }
+
+    // 6. Busca em QUALQUER lugar do HTML bruto por padrão de URL do YouTube
+    // (último recurso — mais permissivo, cobre casos não estruturados)
+    if (!youtubeId) {
+      const mHtml = html.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+      if (mHtml) { youtubeId = mHtml[1]; fonteYoutubeId = 'html-bruto'; }
+    }
+
+    console.log(`[cifra] youtubeId="${youtubeId || '(vazio)'}" fonte="${fonteYoutubeId}" para "${titulo}"`);
 
     if (!cifra.trim()) {
       return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
