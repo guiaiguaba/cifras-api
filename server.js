@@ -516,17 +516,16 @@ app.get('/cifra/obter', async (req, res) => {
     let titulo = (name || '').trim();
     let nomeArtista = (artist || '').trim();
 
-    // Se não foram passados, tenta extrair do __NEXT_DATA__
+    // Se não foram passados, extrai do mesmo bloco song/page usado para
+    // o tom e o vídeo (fonte real desta página — não existe __NEXT_DATA__).
     if (!titulo || !nomeArtista) {
-      const nextData = $('script#__NEXT_DATA__').html();
-      if (nextData) {
-        try {
-          const json = JSON.parse(nextData);
-          const props = json?.props?.pageProps || {};
-          titulo = titulo || props.song?.name || props.name || '';
-          nomeArtista = nomeArtista || props.artist?.name || props.artistName || '';
-        } catch (_) {}
-      }
+      const matchNome = html.match(/name:\s*'((?:[^'\\]|\\.)*)'/);
+      const matchArtista = html.match(/artist:\s*'((?:[^'\\]|\\.)*)'/);
+      // Usa JSON.parse para decodificar escapes (\u002C, \u00E9 etc) de
+      // forma segura, em vez de regex manual.
+      const decodificar = (s) => { try { return JSON.parse(`"${s}"`); } catch (_) { return s; } };
+      if (!titulo && matchNome) titulo = decodificar(matchNome[1]);
+      if (!nomeArtista && matchArtista) nomeArtista = decodificar(matchArtista[1]);
     }
 
     // Último fallback para título
@@ -537,20 +536,16 @@ app.get('/cifra/obter', async (req, res) => {
       nomeArtista = artista.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     }
 
-    // Tom — tenta extrair do JSON embutido
+    // Tom e cifra — a página não usa Next.js (não existe script
+    // __NEXT_DATA__); os dados reais vêm do bloco inline window._ccq.push(
+    // ['song/page', ..., { key: 'G', chords: [...], ... }]) que o
+    // CifraClub injeta para inicializar a página. Extraímos o campo "key"
+    // de lá como fonte primária do tom.
     let tom = '';
     let cifra = '';
 
-    // __NEXT_DATA__ para cifra e tom
-    const nextData = $('script#__NEXT_DATA__').html();
-    if (nextData) {
-      try {
-        const json = JSON.parse(nextData);
-        const props = json?.props?.pageProps || {};
-        tom = props.song?.key || props.key || '';
-        cifra = props.song?.chord || props.chord || '';
-      } catch (_) {}
-    }
+    const matchKey = html.match(/key:\s*'([A-G][b#]?m?)'/) || html.match(/key:\s*"([A-G][b#]?m?)"/);
+    if (matchKey) tom = matchKey[1];
 
     // Busca "chord" em qualquer script da página
     if (!cifra) {
@@ -606,78 +601,40 @@ app.get('/cifra/obter', async (req, res) => {
       if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
     }
 
-    // Extrai YouTube ID da página — só aceita se houver certeza de que o
-    // vídeo pertence A ESTA música. Fallbacks genéricos que vasculham a
-    // página inteira foram removidos porque pegavam vídeos errados
-    // (anúncios, "músicas relacionadas", outros widgets da página).
+    // Extrai YouTube ID da página — a fonte real é o script inline que o
+    // CifraClub injeta para inicializar a página da música:
+    //
+    //   window._ccq.push(['song/page', pageScript, {
+    //     cifraId: ..., songId: ..., name: '...', artist: '...',
+    //     youtubeId: 'ldK43s9UyQI', key: 'G', chords: [...]
+    //   }]);
+    //
+    // Não é JSON válido (objeto JS literal, chaves sem aspas), então
+    // extraímos só o campo que precisamos via regex em vez de fazer parse
+    // do objeto inteiro. Essa é a MESMA estrutura que entrega `name`,
+    // `artist` e `key` — ou seja, é garantidamente desta música específica,
+    // não uma busca solta pela página.
     let youtubeId = '';
     let fonteYoutubeId = 'nenhuma';
 
-    // 1. __NEXT_DATA__ — fonte estruturada, confiável: o campo vem de
-    // dentro do objeto da própria música (props.song), não de busca livre.
-    if (nextData) {
-      try {
-        const json = JSON.parse(nextData);
-        const props = json?.props?.pageProps || {};
-        const song = props.song || props.cifra || {};
-        youtubeId = song.youtubeId || song.youtube_id || song.video?.youtubeId || '';
-        if (youtubeId) fonteYoutubeId = '__NEXT_DATA__';
-      } catch (_) {}
+    const matchSongPage = html.match(/_ccq\.push\(\['song\/page',[\s\S]{0,1500}/);
+    if (matchSongPage) {
+      const blocoSongPage = matchSongPage[0];
+      const matchYt = blocoSongPage.match(/youtubeId:\s*'([a-zA-Z0-9_-]{11})'/)
+        || blocoSongPage.match(/youtubeId:\s*"([a-zA-Z0-9_-]{11})"/);
+      if (matchYt) { youtubeId = matchYt[1]; fonteYoutubeId = 'song/page'; }
     }
 
-    // 2. Iframe do YouTube dentro do contêiner específico do player da
-    // cifra (não em qualquer iframe da página — anúncios também usam iframe).
+    // Fallback: caso a estrutura do bloco song/page mude, tenta achar o
+    // campo em qualquer lugar do HTML, mas só aceita se vier acompanhado
+    // de outros campos da MESMA música por perto (songId/cifraId), para
+    // não pegar vídeo de "músicas relacionadas" ou anúncios.
     if (!youtubeId) {
-      const iframeNaSecaoCifra = $('#cifra_cnt iframe[src*="youtube"], .cifra_cnt iframe[src*="youtube"], [class*="video-player"] iframe[src*="youtube"], [id*="video"] iframe[src*="youtube"]').first();
-      if (iframeNaSecaoCifra.length) {
-        const src = iframeNaSecaoCifra.attr('src') || '';
-        const m = src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-        if (m) { youtubeId = m[1]; fonteYoutubeId = 'iframe:secao-cifra'; }
-      }
+      const matchGenerico = html.match(/(?:cifraId|songId)[\s\S]{0,500}?youtubeId:\s*['"]([a-zA-Z0-9_-]{11})['"]/);
+      if (matchGenerico) { youtubeId = matchGenerico[1]; fonteYoutubeId = 'fallback:proximo-a-songId'; }
     }
-
-    // 3. Atributo data-video-id especificamente dentro do bloco da música
-    // (não em qualquer lugar da página).
-    if (!youtubeId) {
-      const dataAttrNaSecao = $('#cifra_cnt [data-video-id], .cifra_cnt [data-video-id], [class*="song"] [data-video-id]').first();
-      if (dataAttrNaSecao.length) {
-        const v = dataAttrNaSecao.attr('data-video-id');
-        if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) { youtubeId = v; fonteYoutubeId = 'data-attr:secao-cifra'; }
-      }
-    }
-
-    // Nenhum fallback genérico de página inteira — se não achou com
-    // confiança de que é desta música, fica sem vídeo (melhor não vincular
-    // do que vincular errado).
 
     console.log(`[cifra] youtubeId="${youtubeId || '(vazio)'}" fonte="${fonteYoutubeId}" para "${titulo}"`);
-
-    // DEBUG TEMPORÁRIO: loga uma amostra do __NEXT_DATA__ para diagnosticar
-    // o caminho real da estrutura quando youtubeId não é encontrado.
-    // Remover depois de confirmar o caminho correto.
-    if (!youtubeId && nextData) {
-      try {
-        const json = JSON.parse(nextData);
-        const props = json?.props?.pageProps || {};
-        const chaves = Object.keys(props);
-        console.log(`[debug] chaves de pageProps: ${chaves.join(', ')}`);
-        if (props.song) console.log(`[debug] chaves de pageProps.song: ${Object.keys(props.song).join(', ')}`);
-        // Procura qualquer chave que contenha "video" ou "youtube" em qualquer nível raso
-        const achados = [];
-        const buscar = (obj, caminho, profundidade) => {
-          if (profundidade > 3 || !obj || typeof obj !== 'object') return;
-          for (const k of Object.keys(obj)) {
-            const novoCaminho = `${caminho}.${k}`;
-            if (/video|youtube/i.test(k)) achados.push(`${novoCaminho} = ${JSON.stringify(obj[k]).slice(0, 100)}`);
-            if (typeof obj[k] === 'object') buscar(obj[k], novoCaminho, profundidade + 1);
-          }
-        };
-        buscar(props, 'pageProps', 0);
-        console.log(`[debug] campos relacionados a video/youtube encontrados:\n${achados.join('\n') || '(nenhum)'}`);
-      } catch (e) {
-        console.log(`[debug] erro ao analisar NEXT_DATA: ${e.message}`);
-      }
-    }
 
     if (!cifra.trim()) {
       return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
