@@ -23,6 +23,7 @@ let inicializado = false;
 // de 5 min, o que é aceitável e não duplicará pois marcamos os itens.
 let ultimaVerificacaoEscalas = new Date();
 let ultimaVerificacaoAvisos = new Date();
+let ultimaVerificacaoMensagens = new Date();
 let ultimaVerificacaoLembretes = new Date(0); // força primeira rodada de lembretes a rodar
 
 const INTERVALO_POLLING_MS = 5 * 60 * 1000; // 5 minutos
@@ -170,6 +171,51 @@ async function verificarNovosAvisos() {
 }
 
 // -----------------------------------------------------------------------
+// 2b. Notifica nova mensagem no chat do ministério
+// -----------------------------------------------------------------------
+
+async function verificarNovasMensagens() {
+  if (!db) return;
+  const agora = new Date();
+
+  try {
+    const ministeriosSnap = await db.collection('ministerios').get();
+
+    for (const ministerioDoc of ministeriosSnap.docs) {
+      const mensagensSnap = await ministerioDoc.ref
+        .collection('mensagens')
+        .where('criadoEm', '>', admin.firestore.Timestamp.fromDate(ultimaVerificacaoMensagens))
+        .get();
+
+      if (mensagensSnap.empty) continue;
+
+      const membrosSnap = await ministerioDoc.ref.collection('membros').get();
+      const ministerioNome = ministerioDoc.data().nome || 'seu ministério';
+
+      for (const msgDoc of mensagensSnap.docs) {
+        const msg = msgDoc.data();
+        const corpo = (msg.texto || '').length > 80 ? `${msg.texto.slice(0, 80)}...` : (msg.texto || '');
+
+        for (const membroDoc of membrosSnap.docs) {
+          // Não notifica o próprio autor da mensagem
+          if (membroDoc.id === msg.uid) continue;
+
+          await enviarParaUsuario(membroDoc.id, {
+            titulo: `💬 ${msg.nome || 'Mensagem'} — ${ministerioNome}`,
+            corpo,
+            dados: { tipo: 'mensagem_nova', ministerioId: ministerioDoc.id, mensagemId: msgDoc.id },
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[notificacoes] Erro ao verificar novas mensagens:', e.message);
+  }
+
+  ultimaVerificacaoMensagens = agora;
+}
+
+// -----------------------------------------------------------------------
 // 3. Lembrete de confirmação pendente perto do culto
 // -----------------------------------------------------------------------
 // Roda a cada ciclo, mas só notifica cada escala UMA vez (marca um campo
@@ -238,6 +284,7 @@ function iniciarPolling() {
   const ciclo = async () => {
     await verificarNovasEscalas();
     await verificarNovosAvisos();
+    await verificarNovasMensagens();
     await verificarConfirmacoesPendentes();
   };
 
