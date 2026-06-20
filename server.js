@@ -652,6 +652,33 @@ app.get('/cifra/obter', async (req, res) => {
 
     console.log(`[cifra] youtubeId="${youtubeId || '(vazio)'}" fonte="${fonteYoutubeId}" para "${titulo}"`);
 
+    // DEBUG TEMPORÁRIO: loga uma amostra do __NEXT_DATA__ para diagnosticar
+    // o caminho real da estrutura quando youtubeId não é encontrado.
+    // Remover depois de confirmar o caminho correto.
+    if (!youtubeId && nextData) {
+      try {
+        const json = JSON.parse(nextData);
+        const props = json?.props?.pageProps || {};
+        const chaves = Object.keys(props);
+        console.log(`[debug] chaves de pageProps: ${chaves.join(', ')}`);
+        if (props.song) console.log(`[debug] chaves de pageProps.song: ${Object.keys(props.song).join(', ')}`);
+        // Procura qualquer chave que contenha "video" ou "youtube" em qualquer nível raso
+        const achados = [];
+        const buscar = (obj, caminho, profundidade) => {
+          if (profundidade > 3 || !obj || typeof obj !== 'object') return;
+          for (const k of Object.keys(obj)) {
+            const novoCaminho = `${caminho}.${k}`;
+            if (/video|youtube/i.test(k)) achados.push(`${novoCaminho} = ${JSON.stringify(obj[k]).slice(0, 100)}`);
+            if (typeof obj[k] === 'object') buscar(obj[k], novoCaminho, profundidade + 1);
+          }
+        };
+        buscar(props, 'pageProps', 0);
+        console.log(`[debug] campos relacionados a video/youtube encontrados:\n${achados.join('\n') || '(nenhum)'}`);
+      } catch (e) {
+        console.log(`[debug] erro ao analisar NEXT_DATA: ${e.message}`);
+      }
+    }
+
     if (!cifra.trim()) {
       return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
     }
