@@ -3,7 +3,22 @@ const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
 const { pool, initSchema } = require('./db');
-const cloudinary = require('cloudinary').v2;
+const cloudinary    = require('cloudinary').v2;
+const admin         = require('firebase-admin');
+
+// Firebase Admin SDK — inicializa com credenciais do ambiente
+// Variável de ambiente: FIREBASE_SERVICE_ACCOUNT (JSON stringificado)
+// ou GOOGLE_APPLICATION_CREDENTIALS (path para o arquivo)
+if (!admin.apps.length) {
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
+      ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+      : undefined;
+  admin.initializeApp({
+    credential: serviceAccount
+        ? admin.credential.cert(serviceAccount)
+        : admin.credential.applicationDefault(),
+  });
+}
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -363,6 +378,92 @@ async function revogar(uid) {
 </html>`);
 });
 
+
+
+// ---------------------------------------------------------------------------
+// Notificações de escala — dispara push para membros escalados
+// ---------------------------------------------------------------------------
+
+// POST /notificacoes/escala
+// Body: { uids, ministerioId, escalaId, titulo, corpo, data }
+app.post('/notificacoes/escala', exigirApiKey, async (req, res) => {
+  try {
+    const { uids, ministerioId, escalaId, titulo, corpo, data: dadosExtra } = req.body;
+    if (!uids || !Array.isArray(uids) || uids.length === 0) {
+      return res.status(400).json({ erro: 'uids é obrigatório.' });
+    }
+
+    const db = admin.firestore();
+
+    // Coleta todos os tokens FCM dos uids escalados
+    const tokens = [];
+    for (const uid of uids) {
+      const snap = await db
+          .collection('usuarios').doc(uid)
+          .collection('tokensFcm')
+          .get();
+      snap.docs.forEach(d => tokens.push(d.id));
+    }
+
+    if (tokens.length === 0) {
+      return res.json({ ok: true, enviados: 0, motivo: 'Nenhum token FCM registrado.' });
+    }
+
+    // Remove duplicatas
+    const uniqueTokens = [...new Set(tokens)];
+
+    // Envia em lotes de 500 (limite do FCM)
+    const BATCH = 500;
+    let enviados = 0;
+    let falhas   = 0;
+
+    for (let i = 0; i < uniqueTokens.length; i += BATCH) {
+      const lote = uniqueTokens.slice(i, i + BATCH);
+      const result = await admin.messaging().sendEachForMulticast({
+        tokens: lote,
+        notification: { title: titulo, body: corpo },
+        data: {
+          tipo:         dadosExtra?.tipo        ?? 'escala',
+          ministerioId: dadosExtra?.ministerioId ?? ministerioId ?? '',
+          escalaId:     dadosExtra?.escalaId     ?? escalaId     ?? '',
+        },
+        android: {
+          priority: 'high',
+          notification: { sound: 'default', channelId: 'escalas' },
+        },
+        apns: {
+          payload: { aps: { sound: 'default', badge: 1 } },
+        },
+      });
+      enviados += result.successCount;
+      falhas   += result.failureCount;
+
+      // Remove tokens inválidos do Firestore
+      for (let j = 0; j < result.responses.length; j++) {
+        const r = result.responses[j];
+        if (!r.success && (
+            r.error?.code === 'messaging/registration-token-not-registered' ||
+            r.error?.code === 'messaging/invalid-registration-token'
+        )) {
+          // Remove token inválido — best-effort
+          try {
+            const tokenInvalido = lote[j];
+            for (const uid of uids) {
+              await db.collection('usuarios').doc(uid)
+                  .collection('tokensFcm').doc(tokenInvalido).delete();
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    console.log(`[FCM Escala] ${enviados} enviados, ${falhas} falhas para ${uids.length} membros`);
+    res.json({ ok: true, enviados, falhas, tokens: uniqueTokens.length });
+  } catch (e) {
+    console.error('[FCM Escala] Erro:', e);
+    res.status(500).json({ erro: e.message });
+  }
+});
 
 // GET /admin/planos/lista — dados completos para o dashboard Flutter
 app.get('/admin/planos/lista', exigirApiKey, async (req, res) => {
