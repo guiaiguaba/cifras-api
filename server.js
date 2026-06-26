@@ -955,24 +955,30 @@ app.get('/cifra/obter', async (req, res) => {
     // -----------------------------------------------------------------
     // Título — og:title é sempre renderizado no SSR do Next.js
     if (!titulo) {
-      titulo = $('meta[property="og:title"]').attr('content') || '';
-      // Remove sufixos do site
-      // Remove sufixos do site
-		titulo = titulo.replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-		// CifraClub coloca "Am7 - Bendirei (MORADA)" no og:title
-		// Remove o prefixo de acorde: "Am7 - " → ""
-		titulo = titulo.replace(/^[A-Gb#][a-zA-Z0-9#b\/]*\s*[-–]\s*/, '').trim();
-		// Separa "Título (Artista)" se vier junto
-		const tituloMatch = titulo.match(/^(.+?)\s*\((.+?)\)\s*$/);
-		if (tituloMatch) {
-		  titulo      = tituloMatch[1].trim();
-		  nomeArtista = nomeArtista || tituloMatch[2].trim();
-		}
-		// Se ainda vazio, usa o <title>
-		if (!titulo) {
-		  titulo = $('title').text().replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-		  titulo = titulo.replace(/^[A-Gb#][a-zA-Z0-9#b\/]*\s*[-–]\s*/, '').trim();
-		}
+      const ogTitle = $('meta[property="og:title"]').attr('content') || '';
+
+	  // ogTitle: "Am7 - Bendirei (MORADA) | Cifra Club"
+	  let tituloRaw = ogTitle.replace(/\s*[|\-]\s*Cifra Club\s*/gi, '').trim();
+
+	  // Remove prefixo de acorde: "Am7 - " antes do título real
+	  const acordePrefixo = tituloRaw.match(/^([A-Gb#][a-zA-Z0-9#b\/]*)\s*[-–]\s*(.+)$/);
+	  if (acordePrefixo) tituloRaw = acordePrefixo[2].trim();
+
+	  // Separa "Título (Artista)"
+	  const partesParen = tituloRaw.match(/^(.+?)\s*\((.+?)\)\s*$/);
+	  if (partesParen) {
+		titulo      = partesParen[1].trim();
+		nomeArtista = nomeArtista || partesParen[2].trim();
+	  } else {
+		titulo = tituloRaw;
+	  }
+
+	  if (!titulo) {
+		let t = $('title').text().replace(/\s*[|\-]\s*Cifra Club\s*/gi, '').trim();
+		const m = t.match(/^([A-Gb#][a-zA-Z0-9#b\/]*)\s*[-–]\s*(.+)$/);
+		if (m) t = m[2].trim();
+		titulo = t;
+	  }
     }
 
     if (!nomeArtista) {
