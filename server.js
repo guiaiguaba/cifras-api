@@ -957,11 +957,22 @@ app.get('/cifra/obter', async (req, res) => {
     if (!titulo) {
       titulo = $('meta[property="og:title"]').attr('content') || '';
       // Remove sufixos do site
-      titulo = titulo.replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-      // Se ainda vazio, usa o <title>
-      if (!titulo) {
-        titulo = $('title').text().replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
-      }
+      // Remove sufixos do site
+		titulo = titulo.replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
+		// CifraClub coloca "Am7 - Bendirei (MORADA)" no og:title
+		// Remove o prefixo de acorde: "Am7 - " → ""
+		titulo = titulo.replace(/^[A-Gb#][a-zA-Z0-9#b\/]*\s*[-–]\s*/, '').trim();
+		// Separa "Título (Artista)" se vier junto
+		const tituloMatch = titulo.match(/^(.+?)\s*\((.+?)\)\s*$/);
+		if (tituloMatch) {
+		  titulo      = tituloMatch[1].trim();
+		  nomeArtista = nomeArtista || tituloMatch[2].trim();
+		}
+		// Se ainda vazio, usa o <title>
+		if (!titulo) {
+		  titulo = $('title').text().replace(/\s*[-|]\s*Cifra Club\s*/gi, '').trim();
+		  titulo = titulo.replace(/^[A-Gb#][a-zA-Z0-9#b\/]*\s*[-–]\s*/, '').trim();
+		}
     }
 
     if (!nomeArtista) {
