@@ -5,7 +5,6 @@ const path = require('path');
 const { pool, initSchema } = require('./db');
 const cloudinary = require('cloudinary').v2;
 const admin      = require('firebase-admin');
-
 // ---------------------------------------------------------------------------
 // Firebase Admin SDK
 // ---------------------------------------------------------------------------
@@ -19,7 +18,6 @@ if (!admin.apps.length) {
         : admin.credential.applicationDefault(),
   });
 }
-
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key:    process.env.CLOUDINARY_API_KEY,
@@ -35,28 +33,21 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-const app = express();
-app.use(cors());
 app.use(express.json({ limit: '2mb' }));
-
 const API_KEY        = process.env.API_KEY;
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
-
 if (!API_KEY) {
   console.warn('AVISO: API_KEY não definida. API acessível sem autenticação.');
 }
-
 function exigirApiKey(req, res, next) {
   if (!API_KEY) return next();
   const chave = req.header('x-api-key');
   if (chave !== API_KEY) return res.status(401).json({ erro: 'API key inválida ou ausente.' });
   next();
 }
-
 // ---------------------------------------------------------------------------
 // Helpers de plano
 // ---------------------------------------------------------------------------
-
 async function getOuCriarPlano(adminUid) {
   const { rows } = await pool.query('SELECT * FROM na_planos WHERE admin_uid=$1', [adminUid]);
   if (rows.length > 0) return rows[0];
@@ -67,13 +58,11 @@ async function getOuCriarPlano(adminUid) {
   );
   return novo[0];
 }
-
 function planoEstaAtivo(row) {
   if (row.plano === 'free') return true;
   if (!row.validade) return false;
   return new Date(row.validade) > new Date();
 }
-
 function formatarPlano(row) {
   const ativo = planoEstaAtivo(row);
   return {
@@ -86,18 +75,15 @@ function formatarPlano(row) {
     ativo,
   };
 }
-
 // ---------------------------------------------------------------------------
 // Rotas de Plano
 // ---------------------------------------------------------------------------
-
 app.get('/plano/:adminUid', exigirApiKey, async (req, res) => {
   try {
     const row = await getOuCriarPlano(req.params.adminUid);
     res.json(formatarPlano(row));
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
-
 app.post('/plano/:adminUid/verificar-limites', exigirApiKey, async (req, res) => {
   try {
     const row   = await getOuCriarPlano(req.params.adminUid);
@@ -110,34 +96,28 @@ app.post('/plano/:adminUid/verificar-limites', exigirApiKey, async (req, res) =>
     });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
-
 // ---------------------------------------------------------------------------
 // Webhook Mercado Pago
 // ---------------------------------------------------------------------------
-
 app.post('/webhook/mercadopago', async (req, res) => {
   try {
     const { type, data } = req.body;
     if (type !== 'payment') return res.sendStatus(200);
     const pagamentoId = data?.id;
     if (!pagamentoId) return res.sendStatus(200);
-
     const mpResp = await fetch(
       `https://api.mercadopago.com/v1/payments/${pagamentoId}`,
       { headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` } }
     );
     const mp = await mpResp.json();
     if (mp.status !== 'approved') return res.sendStatus(200);
-
     const adminUid = mp.metadata?.admin_uid;
     const periodo  = mp.metadata?.periodo || 'mensal';
     const valor    = mp.transaction_amount;
     if (!adminUid) return res.sendStatus(200);
-
     const validade = new Date();
     if (periodo === 'anual') validade.setFullYear(validade.getFullYear() + 1);
     else validade.setMonth(validade.getMonth() + 1);
-
     await pool.query(
       `INSERT INTO na_planos (admin_uid,plano,validade,pagamento_id,limite_membros,limite_ministerios,permite_gravacao,permite_ia)
        VALUES ($1,'pro',$2,$3,30,2,true,true)
@@ -159,15 +139,12 @@ app.post('/webhook/mercadopago', async (req, res) => {
     res.sendStatus(500);
   }
 });
-
 // ---------------------------------------------------------------------------
 // Dashboard HTML de planos
 // ---------------------------------------------------------------------------
-
 app.get('/admin/planos', async (req, res) => {
   const { rows }      = await pool.query(`SELECT * FROM na_planos ORDER BY atualizado_em DESC`);
   const { rows: pags } = await pool.query(`SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 50`);
-
   const linhas = rows.map(r => {
     const ativo    = planoEstaAtivo(r);
     const validade = r.validade ? new Date(r.validade).toLocaleDateString('pt-BR') : '—';
@@ -184,13 +161,11 @@ app.get('/admin/planos', async (req, res) => {
         <button onclick="revogar('${r.admin_uid}')" style="background:#ff4444;color:#fff;border:none;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;margin-left:4px">Revogar</button>
       </td></tr>`;
   }).join('');
-
   const linhasPag = pags.map(p => `<tr>
     <td style="font-size:11px;color:#666">${p.admin_uid}</td>
     <td>${p.pagamento_id}</td><td>${p.status}</td>
     <td>R$ ${Number(p.valor).toFixed(2)}</td><td>${p.periodo}</td>
     <td>${new Date(p.criado_em).toLocaleDateString('pt-BR')}</td></tr>`).join('');
-
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Notas de Adoração — Painel</title>
@@ -226,17 +201,14 @@ async function ativarPro(uid){const r=await fetch('/admin/planos/ativar',{method
 async function revogar(uid){if(!confirm('Revogar plano Pro de '+uid+'?'))return;const r=await fetch('/admin/planos/revogar',{method:'POST',headers,body:JSON.stringify({adminUid:uid})});const d=await r.json();r.ok?(mostrarMsg('Revogado.',true),location.reload()):mostrarMsg(d.erro,false);}
 </script></body></html>`);
 });
-
 // ---------------------------------------------------------------------------
 // Notificações de escala (FCM)
 // ---------------------------------------------------------------------------
-
 app.post('/notificacoes/escala', exigirApiKey, async (req, res) => {
   try {
     const { uids, ministerioId, escalaId, titulo, corpo, data: dadosExtra } = req.body;
     if (!uids || !Array.isArray(uids) || uids.length === 0)
       return res.status(400).json({ erro: 'uids é obrigatório.' });
-
     const db     = admin.firestore();
     const tokens = [];
     for (const uid of uids) {
@@ -245,10 +217,8 @@ app.post('/notificacoes/escala', exigirApiKey, async (req, res) => {
     }
     if (tokens.length === 0)
       return res.json({ ok: true, enviados: 0, motivo: 'Nenhum token FCM registrado.' });
-
     const uniqueTokens = [...new Set(tokens)];
     let enviados = 0, falhas = 0;
-
     for (let i = 0; i < uniqueTokens.length; i += 500) {
       const lote   = uniqueTokens.slice(i, i + 500);
       const result = await admin.messaging().sendEachForMulticast({
@@ -285,11 +255,9 @@ app.post('/notificacoes/escala', exigirApiKey, async (req, res) => {
     res.status(500).json({ erro: e.message });
   }
 });
-
 // ---------------------------------------------------------------------------
 // Admin planos/lista (dashboard Flutter)
 // ---------------------------------------------------------------------------
-
 app.get('/admin/planos/lista', exigirApiKey, async (req, res) => {
   try {
     const { rows: planos     } = await pool.query('SELECT * FROM na_planos ORDER BY atualizado_em DESC');
@@ -303,7 +271,6 @@ app.get('/admin/planos/lista', exigirApiKey, async (req, res) => {
     res.json({ planos, pagamentos, metricas:{ totalPro, totalFree, receitaMes: receitaMes.toFixed(2) } });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
-
 app.post('/admin/planos/ativar', exigirApiKey, async (req, res) => {
   try {
     const { adminUid, periodo='mensal' } = req.body;
@@ -323,7 +290,6 @@ app.post('/admin/planos/ativar', exigirApiKey, async (req, res) => {
     res.json({ ok: true, validade });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
-
 app.post('/admin/planos/revogar', exigirApiKey, async (req, res) => {
   try {
     const { adminUid } = req.body;
@@ -338,11 +304,9 @@ app.post('/admin/planos/revogar', exigirApiKey, async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
-
 // ---------------------------------------------------------------------------
 // Gravações — deleção no Cloudinary
 // ---------------------------------------------------------------------------
-
 app.delete('/gravacao', exigirApiKey, async (req, res) => {
   const { publicId } = req.query;
   if (!publicId) return res.status(400).json({ erro: 'publicId é obrigatório.' });
@@ -354,15 +318,22 @@ app.delete('/gravacao', exigirApiKey, async (req, res) => {
     res.status(500).json({ erro: err.message });
   }
 });
-
 // ---------------------------------------------------------------------------
-// Músicas
+// Músicas — com suporte a busca por ?q=
 // ---------------------------------------------------------------------------
-
 app.get('/musicas', exigirApiKey, async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas ORDER BY titulo'
-  );
+  const q = (req.query.q || '').trim();
+  const { rows } = q
+    ? await pool.query(
+        `SELECT id,titulo,artista,imagem_url,cifra_original,tom_original
+         FROM cifras_musicas
+         WHERE titulo ILIKE $1 OR artista ILIKE $1
+         ORDER BY titulo LIMIT 50`,
+        [`%${q}%`]
+      )
+    : await pool.query(
+        'SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas ORDER BY titulo'
+      );
   res.json(rows.map(formatarMusica));
 });
 app.get('/musicas/:id', exigirApiKey, async (req, res) => {
@@ -456,7 +427,6 @@ app.delete('/registros/:id', exigirApiKey, async (req, res) => {
   if (!rowCount) return res.status(404).json({ erro: 'Registro não encontrado.' });
   res.json({ ok: true });
 });
-
 // Dashboard estático
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 app.get('/dashboard-api/musicas', async (req, res) => {
@@ -489,11 +459,9 @@ app.delete('/dashboard-api/musicas/:id', async (req, res) => {
   if (!rowCount) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json({ ok: true });
 });
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function formatarMusica(row) {
   return { id:row.id, titulo:row.titulo, artista:row.artista, imagemUrl:row.imagem_url, cifraOriginal:row.cifra_original, tomOriginal:row.tom_original };
 }
@@ -503,11 +471,9 @@ function formatarVariante(row) {
 function formatarRegistro(row) {
   return { id:row.id, musicaId:row.musica_id, varianteId:row.variante_id, data:row.data, tipoCulto:row.tipo_culto };
 }
-
 // ---------------------------------------------------------------------------
 // Hinos — Harpa Cristã e Cantor Cristão
 // ---------------------------------------------------------------------------
-
 app.get('/hinos', exigirApiKey, async (req, res) => {
   const { hinario='harpa', q='', pagina='1', por_pagina='30' } = req.query;
   const offset=(parseInt(pagina)-1)*parseInt(por_pagina), limit=parseInt(por_pagina);
@@ -580,13 +546,10 @@ app.put('/dashboard-api/hinos/:hinario/:numero/cifra', async (req, res) => {
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ erro:'Erro ao salvar cifra' }); }
 });
-
 // ---------------------------------------------------------------------------
 // CifraClub — busca e obtenção de cifras
 // ---------------------------------------------------------------------------
-
 const cheerio = require('cheerio');
-
 const HEADERS_CC = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/json, text/plain, */*',
@@ -594,8 +557,6 @@ const HEADERS_CC = {
   'Referer': 'https://www.cifraclub.com.br/',
   'Origin': 'https://www.cifraclub.com.br',
 };
-
-// GET /cifra/buscar?q=nome+da+musica
 app.get('/cifra/buscar', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ erro: 'q é obrigatório.' });
@@ -620,13 +581,9 @@ app.get('/cifra/buscar', async (req, res) => {
     res.status(502).json({ erro: 'Erro ao buscar cifra: ' + e.message });
   }
 });
-
-// GET /cifra/obter?artista=slug&musica=slug&name=Nome&artist=Artista
-// name e artist passados pela busca são usados diretamente (mais confiável)
 app.get('/cifra/obter', async (req, res) => {
   const { artista, musica, name, artist } = req.query;
   if (!artista || !musica) return res.status(400).json({ erro: 'artista e musica são obrigatórios.' });
-
   try {
     const pageUrl  = `https://www.cifraclub.com.br/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}/`;
     const pageResp = await fetch(pageUrl, {
@@ -634,19 +591,10 @@ app.get('/cifra/obter', async (req, res) => {
       signal: AbortSignal.timeout(20000),
     });
     if (!pageResp.ok) throw new Error(`CifraClub retornou ${pageResp.status}`);
-
     const html = await pageResp.text();
     const $    = cheerio.load(html);
-
-    // -----------------------------------------------------------------
-    // Título e artista — usa os parâmetros da busca quando disponíveis
-    // (muito mais confiável do que tentar extrair do HTML)
-    // -----------------------------------------------------------------
     let titulo      = (name   || '').trim();
     let nomeArtista = (artist || '').trim();
-
-    // Fallback: extrai do bloco song/page injetado pelo CifraClub
-    // window._ccq.push(['song/page', script, { name: '...', artist: '...', key: '...', youtubeId: '...', ... }])
     if (!titulo || !nomeArtista) {
       const matchNome    = html.match(/name:\s*'((?:[^'\\]|\\.)*)'/);
       const matchArtista = html.match(/artist:\s*'((?:[^'\\]|\\.)*)'/);
@@ -654,23 +602,12 @@ app.get('/cifra/obter', async (req, res) => {
       if (!titulo      && matchNome)    titulo      = decodificar(matchNome[1]);
       if (!nomeArtista && matchArtista) nomeArtista = decodificar(matchArtista[1]);
     }
-
-    // Último fallback — humaniza o slug
     if (!titulo)      titulo      = musica.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase());
     if (!nomeArtista) nomeArtista = artista.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase());
-
-    // -----------------------------------------------------------------
-    // Tom — extrai do bloco song/page (campo key)
-    // -----------------------------------------------------------------
     let tom   = '';
     let cifra = '';
-
     const matchKey = html.match(/key:\s*'([A-G][b#]?m?)'/) || html.match(/key:\s*"([A-G][b#]?m?)"/);
     if (matchKey) tom = matchKey[1];
-
-    // -----------------------------------------------------------------
-    // Cifra — campo "chord" em scripts da página
-    // -----------------------------------------------------------------
     $('script').each((_, el) => {
       if (cifra) return;
       const txt = $(el).html() || '';
@@ -685,8 +622,6 @@ app.get('/cifra/obter', async (req, res) => {
         if (mt) tom = mt[1];
       }
     });
-
-    // Scraping HTML como último recurso para cifra
     if (!cifra) {
       const elemCifra = $('pre.cifra, #cifra_cnt pre, .cifra_cnt pre, pre').first();
       if (elemCifra.length) {
@@ -695,49 +630,32 @@ app.get('/cifra/obter', async (req, res) => {
       }
     }
     if (!tom) tom = $('.cifra_tom b, .cifra_tom, .tom-atual').first().text().trim();
-
-    // Fallback: primeiro acorde da cifra como tom
     if (!tom && cifra) {
       const m = cifra.match(/\[([A-G][b#]?m?(?:7|maj7|sus2|sus4|9|11|13|dim|aug|add\d)?(?:\/[A-G][b#]?)?)\]/);
       if (m) tom = m[1];
     }
-
     tom = (tom || 'C').replace(/[^A-Gb#m0-9]/g, '');
     const matchTomSimples = tom.match(/^([A-G][b#]?m?)/);
     tom = matchTomSimples ? matchTomSimples[1] : 'C';
-
-    // -----------------------------------------------------------------
-    // YouTube ID — extrai do bloco song/page (fonte mais confiável)
-    // -----------------------------------------------------------------
     let youtubeId     = '';
-    let fonteYoutubeId = 'nenhuma';
-
     const matchSongPage = html.match(/_ccq\.push\(\['song\/page',[\s\S]{0,1500}/);
     if (matchSongPage) {
       const bloco    = matchSongPage[0];
       const matchYt  = bloco.match(/youtubeId:\s*'([a-zA-Z0-9_-]{11})'/)
                     || bloco.match(/youtubeId:\s*"([a-zA-Z0-9_-]{11})"/);
-      if (matchYt) { youtubeId = matchYt[1]; fonteYoutubeId = 'song/page'; }
+      if (matchYt) youtubeId = matchYt[1];
     }
-
-    // Fallback: campo youtubeId próximo a cifraId/songId (evita pegar vídeo de músicas relacionadas)
     if (!youtubeId) {
       const m = html.match(/(?:cifraId|songId)[\s\S]{0,500}?youtubeId:\s*['"]([a-zA-Z0-9_-]{11})['"]/);
-      if (m) { youtubeId = m[1]; fonteYoutubeId = 'fallback:proximo-a-songId'; }
+      if (m) youtubeId = m[1];
     }
-
-    console.log(`[cifra] "${titulo}" | tom="${tom}" | yt="${youtubeId||'(vazio)'}" (${fonteYoutubeId})`);
-
-    // Remove tablatura (linhas E|---)
+    console.log(`[cifra] "${titulo}" | tom="${tom}" | yt="${youtubeId||'(vazio)'}"`);
     if (cifra) {
       const linhas = cifra.split('\n');
       const semTab = linhas.filter(l => !l.match(/^[EADGBe]\|[-\d\/\\hpb~.]+/)).join('\n');
       if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
     }
-
     if (!cifra.trim()) return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
-
-    // Links extras
     const linkLetra = `https://m.letras.mus.br/${artista}/${musica}/`;
     let linkAudio   = '';
     try {
@@ -747,34 +665,21 @@ app.get('/cifra/obter', async (req, res) => {
         if (dData.data?.length > 0) linkAudio = dData.data[0].link || '';
       }
     } catch (_) {}
-
-    res.json({
-      titulo,
-      artista:   nomeArtista,
-      tom,
-      cifra:     cifra.trim(),
-      url:       pageUrl,
-      linkCifra: pageUrl,
-      linkLetra,
-      linkAudio,
-      youtubeId: youtubeId || null,
-    });
+    res.json({ titulo, artista:nomeArtista, tom, cifra:cifra.trim(), url:pageUrl,
+      linkCifra:pageUrl, linkLetra, linkAudio, youtubeId:youtubeId||null });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
     res.status(502).json({ erro: 'Erro ao obter cifra: ' + e.message });
   }
 });
-
 // ---------------------------------------------------------------------------
 // Bíblia Digital
 // ---------------------------------------------------------------------------
-
 const BIBLIA_BASE   = 'https://www.abibliadigital.com.br/api';
 const BIBLIA_TOKEN  = process.env.BIBLIA_TOKEN;
 const bibliaCache   = new Map();
 const BIBLIA_TTL     = 24*60*60*1000;
 const BIBLIA_DIA_TTL = 60*60*1000;
-
 function bibliaHeaders() {
   return { 'Authorization': `Bearer ${BIBLIA_TOKEN}`, 'Content-Type': 'application/json' };
 }
@@ -787,7 +692,6 @@ async function bibliaFetch(url, ttl=BIBLIA_TTL) {
   bibliaCache.set(url, { data, ts: Date.now() });
   return data;
 }
-
 app.get('/biblia/livros', exigirApiKey, async (req, res) => {
   try { res.json(await bibliaFetch(`${BIBLIA_BASE}/books`)); }
   catch(e) { res.status(502).json({ erro:'Erro ao buscar livros', detalhe:e.message }); }
@@ -810,7 +714,6 @@ app.get('/biblia/busca', exigirApiKey, async (req, res) => {
   try { res.json(await bibliaFetch(`${BIBLIA_BASE}/verses/search/${versao}/${encodeURIComponent(q)}`)); }
   catch(e) { res.status(502).json({ erro:'Erro ao buscar', detalhe:e.message }); }
 });
-
 const VERSICULOS_DIA = [
   {livro:'jo',cap:3,ver:16},{livro:'sl',cap:23,ver:1},{livro:'fp',cap:4,ver:13},
   {livro:'rm',cap:8,ver:28},{livro:'is',cap:40,ver:31},{livro:'pv',cap:3,ver:5},
@@ -824,7 +727,6 @@ const VERSICULOS_DIA = [
   {livro:'tg',cap:1,ver:5},{livro:'fp',cap:4,ver:4},{livro:'jo',cap:15,ver:5},
   {livro:'pv',cap:16,ver:3},{livro:'sl',cap:1,ver:1},
 ];
-
 app.get('/biblia/versiculo-dia', exigirApiKey, async (req, res) => {
   const { versao='nvi' }=req.query;
   const agora=new Date(), inicio=new Date(agora.getFullYear(),0,0);
@@ -833,11 +735,9 @@ app.get('/biblia/versiculo-dia', exigirApiKey, async (req, res) => {
   try { res.json(await bibliaFetch(`${BIBLIA_BASE}/verses/${versao}/${ref.livro}/${ref.cap}/${ref.ver}`,BIBLIA_DIA_TTL)); }
   catch(e) { res.status(502).json({ erro:'Erro ao buscar versículo do dia', detalhe:e.message }); }
 });
-
 // ---------------------------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------------------------
-
 const PORT = process.env.PORT || 3000;
 initSchema().then(() => {
   app.listen(PORT, () => console.log(`Notas de Adoração API rodando na porta ${PORT}`));
