@@ -735,6 +735,29 @@ app.get('/biblia/versiculo-dia', exigirApiKey, async (req, res) => {
   try { res.json(await bibliaFetch(`${BIBLIA_BASE}/verses/${versao}/${ref.livro}/${ref.cap}/${ref.ver}`,BIBLIA_DIA_TTL)); }
   catch(e) { res.status(502).json({ erro:'Erro ao buscar versículo do dia', detalhe:e.message }); }
 });
+
+// ---------------------------------------------------------------------------
+// Holyrics — proxy para API Server local (evita Mixed Content no browser)
+// ---------------------------------------------------------------------------
+app.post('/holyrics/proxy', async (req, res) => {
+  const { ip, porta = 8091, token = '', action, input } = req.body;
+  if (!ip || !action) return res.status(400).json({ erro: 'ip e action são obrigatórios.' });
+  try {
+    const url = `http://${ip}:${porta}/api/function${token ? `?token=${token}` : ''}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, input }),
+      signal: AbortSignal.timeout(12000),
+    });
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    console.error('[Holyrics proxy]', e.message);
+    res.status(502).json({ erro: e.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------------------------
