@@ -25,6 +25,15 @@ cloudinary.config({
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+const app = express();
+
+// ── CORS aberto para o webapp React ─────────────────────────────────────────
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','x-api-key','Authorization'],
+}));
+app.options('*', cors());
 
 const app = express();
 app.use(cors());
