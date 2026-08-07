@@ -24,7 +24,6 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 const app = express();
-
 // ── CORS aberto para o webapp React ─────────────────────────────────────────
 app.use(cors({
   origin: '*',
@@ -32,7 +31,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type','x-api-key','Authorization'],
 }));
 app.options('*', cors());
-
 app.use(express.json({ limit: '2mb' }));
 const API_KEY        = process.env.API_KEY;
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
@@ -168,19 +166,19 @@ app.get('/admin/planos', async (req, res) => {
     <td>${new Date(p.criado_em).toLocaleDateString('pt-BR')}</td></tr>`).join('');
   res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Notas de Adoração — Painel</title>
+<title>Base de Adoração — Painel</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#333}
-header{background:#6c63ff;color:#fff;padding:16px 24px}header h1{font-size:18px}header p{font-size:12px;opacity:.7;margin-top:2px}
+header{background:#6B230B;color:#fff;padding:16px 24px}header h1{font-size:18px}header p{font-size:12px;opacity:.7;margin-top:2px}
 .container{max-width:1100px;margin:24px auto;padding:0 16px}.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
-h2{font-size:15px;margin-bottom:16px;color:#6c63ff}table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;padding:8px 10px;background:#f0f0f0;border-bottom:1px solid #e0e0e0;font-size:11px;color:#666}
-td{padding:10px;border-bottom:1px solid #f0f0f0;vertical-align:middle}tr:hover td{background:#fafafa}
+h2{font-size:15px;margin-bottom:16px;color:#E25814}table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 10px;background:#FEF0E3;border-bottom:1px solid #F3E8D8;font-size:11px;color:#6B230B}
+td{padding:10px;border-bottom:1px solid #F3E8D8;vertical-align:middle}tr:hover td{background:#FBF8F3}
 .form-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px}
-.form-row input,.form-row select{border:1px solid #ddd;border-radius:8px;padding:8px 12px;font-size:13px;flex:1;min-width:200px}
-.form-row button{background:#6c63ff;color:#fff;border:none;border-radius:8px;padding:9px 20px;cursor:pointer;font-size:13px;font-weight:600}
+.form-row input,.form-row select{border:1px solid #F3E8D8;border-radius:8px;padding:8px 12px;font-size:13px;flex:1;min-width:200px}
+.form-row button{background:#E25814;color:#fff;border:none;border-radius:8px;padding:9px 20px;cursor:pointer;font-size:13px;font-weight:600}
 #msg{padding:10px 14px;border-radius:8px;font-size:13px;display:none;margin-bottom:12px}
 .ok{background:#e6f4ea;color:#2e7d32}.err{background:#fdecea;color:#c62828}</style></head>
-<body><header><h1>🎵 Notas de Adoração — Painel de Planos</h1><p>Gerencie planos e pagamentos</p></header>
+<body><header><h1>🎵 Base de Adoração — Painel de Planos</h1><p>Gerencie planos e pagamentos</p></header>
 <div class="container">
 <div class="card"><h2>Ativar / Ajustar Plano Manualmente</h2><div id="msg"></div>
 <div class="form-row">
@@ -637,7 +635,8 @@ app.get('/cifra/obter', async (req, res) => {
     tom = (tom || 'C').replace(/[^A-Gb#m0-9]/g, '');
     const matchTomSimples = tom.match(/^([A-G][b#]?m?)/);
     tom = matchTomSimples ? matchTomSimples[1] : 'C';
-    let youtubeId     = '';
+    // ── YouTube ID ──────────────────────────────────────────────────────────
+    let youtubeId = '';
     const matchSongPage = html.match(/_ccq\.push\(\['song\/page',[\s\S]{0,1500}/);
     if (matchSongPage) {
       const bloco    = matchSongPage[0];
@@ -656,17 +655,29 @@ app.get('/cifra/obter', async (req, res) => {
       if (semTab.trim().length > cifra.length * 0.3) cifra = semTab;
     }
     if (!cifra.trim()) return res.status(404).json({ erro: 'Cifra não encontrada.', url: pageUrl });
-    const linkLetra = `https://m.letras.mus.br/${artista}/${musica}/`;
-    let linkAudio   = '';
+    // ── Deezer — busca automática pelo título + artista ───────────────────
+    let deezerTrackId = null;
+    let linkAudio     = '';
     try {
-      const dResp = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(`${nomeArtista} ${titulo}`)}&limit=1`,{ signal:AbortSignal.timeout(8000) });
+      const dQuery = encodeURIComponent(`${nomeArtista} ${titulo}`);
+      const dResp  = await fetch(`https://api.deezer.com/search?q=${dQuery}&limit=1`, {
+        signal: AbortSignal.timeout(8000),
+      });
       if (dResp.ok) {
         const dData = await dResp.json();
-        if (dData.data?.length > 0) linkAudio = dData.data[0].link || '';
+        if (dData.data?.length > 0) {
+          deezerTrackId = String(dData.data[0].id);
+          linkAudio     = dData.data[0].link || '';
+        }
       }
     } catch (_) {}
-    res.json({ titulo, artista:nomeArtista, tom, cifra:cifra.trim(), url:pageUrl,
-      linkCifra:pageUrl, linkLetra, linkAudio, youtubeId:youtubeId||null });
+    const linkLetra = `https://m.letras.mus.br/${artista}/${musica}/`;
+    res.json({
+      titulo, artista: nomeArtista, tom, cifra: cifra.trim(),
+      url: pageUrl, linkCifra: pageUrl, linkLetra, linkAudio,
+      youtubeId:     youtubeId     || null,
+      deezerTrackId: deezerTrackId || null,  // ← NOVO
+    });
   } catch (e) {
     console.error('[cifra] obter:', e.message);
     res.status(502).json({ erro: 'Erro ao obter cifra: ' + e.message });
@@ -735,7 +746,6 @@ app.get('/biblia/versiculo-dia', exigirApiKey, async (req, res) => {
   try { res.json(await bibliaFetch(`${BIBLIA_BASE}/verses/${versao}/${ref.livro}/${ref.cap}/${ref.ver}`,BIBLIA_DIA_TTL)); }
   catch(e) { res.status(502).json({ erro:'Erro ao buscar versículo do dia', detalhe:e.message }); }
 });
-
 // ---------------------------------------------------------------------------
 // Holyrics — proxy para API Server local (evita Mixed Content no browser)
 // ---------------------------------------------------------------------------
@@ -757,13 +767,12 @@ app.post('/holyrics/proxy', async (req, res) => {
     res.status(502).json({ erro: e.message });
   }
 });
-
 // ---------------------------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 initSchema().then(() => {
-  app.listen(PORT, () => console.log(`Notas de Adoração API rodando na porta ${PORT}`));
+  app.listen(PORT, () => console.log(`Base de Adoração API rodando na porta ${PORT}`));
 }).catch(err => {
   console.error('Erro ao inicializar schema:', err);
   process.exit(1);
