@@ -2,7 +2,18 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
-const { pool, initSchema } = require('./db');
+// ── Guard: retorna 503 se pool não configurado ──────────────────────────────
+const exigirPool = (req, res, next) => {
+  if (!pool) return res.status(503).json({ erro: 'Banco de dados não configurado' });
+  next();
+};
+
+// ── PostgreSQL pool (inline — sem arquivo ./db separado) ────────────────────
+const { Pool } = require('pg');
+const pool = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  : null; // sem banco configurado — rotas de plano/pagamento retornam 503
+const initSchema = async () => {}; // schema gerenciado externamente
 const cloudinary = require('cloudinary').v2;
 const admin      = require('firebase-admin');
 // ---------------------------------------------------------------------------
@@ -140,7 +151,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Dashboard HTML de planos
 // ---------------------------------------------------------------------------
-app.get('/admin/planos', async (req, res) => {
+app.get('/admin/planos', exigirPool, async (req, res) => {
   const { rows }      = await pool.query(`SELECT * FROM na_planos ORDER BY atualizado_em DESC`);
   const { rows: pags } = await pool.query(`SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 50`);
   const linhas = rows.map(r => {
@@ -770,6 +781,77 @@ app.post('/holyrics/proxy', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Inicialização
 // ---------------------------------------------------------------------------
+// ── Playlist YouTube — extrai títulos sem chave de API ──────────────────────
+// Usa a página RSS pública do YouTube que não requer autenticação
+app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ erro: 'URL ausente' });
+
+    // Extrai o ID da playlist
+    const match = url.match(/[?&]list=([a-zA-Z0-9_-]+)/);
+    if (!match) return res.status(400).json({ erro: 'URL de playlist inválida' });
+    const playlistId = match[1];
+
+    // Usa a API RSS pública do YouTube (sem chave)
+    const rssUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`;
+    const { default: fetch } = await import('node-fetch');
+    const rssResp = await fetch(rssUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!rssResp.ok) {
+      return res.status(502).json({ erro: `YouTube retornou ${rssResp.status}` });
+    }
+
+    const xml = await rssResp.text();
+
+    // Extrai títulos e IDs dos vídeos do XML
+    const titulos = [];
+    const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+    const tituloRegex = /<title>(.*?)<\/title>/;
+    const videoIdRegex = /<yt:videoId>(.*?)<\/yt:videoId>/;
+
+    let entry;
+    while ((entry = entryRegex.exec(xml)) !== null) {
+      const tMatch = tituloRegex.exec(entry[1]);
+      const vMatch = videoIdRegex.exec(entry[1]);
+      if (tMatch) {
+        // Remove o nome do canal que o YouTube às vezes coloca entre colchetes
+        const titulo = tMatch[1]
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .trim();
+        titulos.push({
+          titulo,
+          youtubeId: vMatch ? vMatch[1] : null,
+        });
+      }
+    }
+
+    if (titulos.length === 0) {
+      return res.status(404).json({ erro: 'Nenhum vídeo encontrado. A playlist pode ser privada.' });
+    }
+
+    res.json({ titulos, total: titulos.length });
+  } catch (e) {
+    console.error('[playlist]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ── Serve React build ────────────────────────────────────────────────────────
+const buildPath = path.join(__dirname, 'build');
+app.use(express.static(buildPath));
+// Qualquer rota não reconhecida pela API devolve o index.html do React (SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(buildPath, 'index.html'));
+});
+
 const PORT = process.env.PORT || 3000;
 initSchema().then(() => {
   app.listen(PORT, () => console.log(`Base de Adoração API rodando na porta ${PORT}`));
