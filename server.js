@@ -794,43 +794,71 @@ app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
     const playlistId = match[1];
 
     // Usa a API RSS pública do YouTube (sem chave)
-    const rssUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`;
     const { default: fetch } = await import('node-fetch');
-    const rssResp = await fetch(rssUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(15000),
+
+    // Scrape a página da playlist do YouTube para obter todos os vídeos
+    const pageUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
+    const pageResp = await fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+      },
+      signal: AbortSignal.timeout(20000),
     });
 
-    if (!rssResp.ok) {
-      return res.status(502).json({ erro: `YouTube retornou ${rssResp.status}` });
+    if (!pageResp.ok) {
+      return res.status(502).json({ erro: `YouTube retornou ${pageResp.status}` });
     }
 
-    const xml = await rssResp.text();
+    const html = await pageResp.text();
 
-    // Extrai títulos e IDs dos vídeos do XML
-    const titulos = [];
-    const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
-    const tituloRegex = /<title>(.*?)<\/title>/;
-    const videoIdRegex = /<yt:videoId>(.*?)<\/yt:videoId>/;
+    // Extrai o JSON embutido na página (ytInitialData)
+    const jsonMatch = html.match(/var ytInitialData = (\{.+?\});/s) ||
+                      html.match(/ytInitialData\s*=\s*(\{.+?\});/s);
 
-    let entry;
-    while ((entry = entryRegex.exec(xml)) !== null) {
-      const tMatch = tituloRegex.exec(entry[1]);
-      const vMatch = videoIdRegex.exec(entry[1]);
-      if (tMatch) {
-        // Remove o nome do canal que o YouTube às vezes coloca entre colchetes
-        const titulo = tMatch[1]
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/&#39;/g, "'")
-          .trim();
-        titulos.push({
-          titulo,
+    if (!jsonMatch) {
+      // Fallback: tenta RSS (máx 15 itens)
+      const rssUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`;
+      const rssResp = await fetch(rssUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (!rssResp.ok) return res.status(404).json({ erro: 'Playlist não encontrada ou privada.' });
+      const xml = await rssResp.text();
+      const titulos = [];
+      const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+      let entry;
+      while ((entry = entryRegex.exec(xml)) !== null) {
+        const tMatch = /<title>(.*?)<\/title>/.exec(entry[1]);
+        const vMatch = /<yt:videoId>(.*?)<\/yt:videoId>/.exec(entry[1]);
+        if (tMatch) titulos.push({
+          titulo: tMatch[1].replace(/&amp;/g,'&').replace(/&#39;/g,"'").trim(),
           youtubeId: vMatch ? vMatch[1] : null,
         });
       }
+      return titulos.length
+        ? res.json({ titulos, total: titulos.length })
+        : res.status(404).json({ erro: 'Nenhum vídeo encontrado. A playlist pode ser privada.' });
+    }
+
+    // Extrai vídeos do ytInitialData
+    const ytData = JSON.parse(jsonMatch[1]);
+    const titulos = [];
+
+    try {
+      const contents =
+        ytData?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]
+          ?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]
+          ?.itemSectionRenderer?.contents?.[0]
+          ?.playlistVideoListRenderer?.contents || [];
+
+      for (const item of contents) {
+        const v = item?.playlistVideoRenderer;
+        if (!v) continue;
+        const titulo = v.title?.runs?.[0]?.text ||
+                       v.title?.simpleText || '';
+        const youtubeId = v.videoId || null;
+        if (titulo) titulos.push({ titulo: titulo.trim(), youtubeId });
+      }
+    } catch (parseErr) {
+      console.error('[playlist] erro ao parsear ytInitialData:', parseErr.message);
     }
 
     if (titulos.length === 0) {
