@@ -49,21 +49,7 @@ const upload  = multer({
 
 const app = express();
 // ── CORS aberto para o webapp React ─────────────────────────────────────────
-// ── Intercepta requests do browser (F5) e serve SPA antes das rotas de API ──
-app.use((req, res, next) => {
-  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
-  const temApiKey  = !!req.header('x-api-key');
-  // Se o browser pediu HTML e não veio com API key → é uma navegação do React Router
-  if (aceitaHtml && !temApiKey && req.method === 'GET') {
-    const buildPath = path.join(__dirname, 'build');
-    const fs = require('fs');
-    const indexPath = path.join(buildPath, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      return res.sendFile(indexPath);
-    }
-  }
-  next();
-});
+// cifras-api: sem middleware de SPA
 
 app.use(cors({
   origin: '*',
@@ -984,19 +970,7 @@ app.delete('/upload', exigirApiKey, async (req, res) => {
   }
 });
 
-// ── Serve React build ────────────────────────────────────────────────────────
-const buildPath = path.join(__dirname, 'build');
-app.use(express.static(buildPath));
-
-// SPA fallback — browser requests (Accept: text/html) sempre recebem index.html
-// Isso garante que F5 em qualquer rota do React Router funcione
-app.get('*', (req, res) => {
-  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
-  if (aceitaHtml) {
-    return res.sendFile(path.join(buildPath, 'index.html'));
-  }
-  res.status(404).json({ erro: 'Rota não encontrada' });
-});
+// cifras-api: sem serve de arquivos estáticos
 
 const PORT = process.env.PORT || 3000;
 // Handler global de erros não capturados — evita crash do servidor
