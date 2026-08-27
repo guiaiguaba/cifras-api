@@ -40,8 +40,31 @@ cloudinary.config({
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+// ── Multer — upload em memória (passa para Cloudinary) ──────────────────────
+const multer  = require('multer');
+const upload  = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+});
+
 const app = express();
 // ── CORS aberto para o webapp React ─────────────────────────────────────────
+// ── Intercepta requests do browser (F5) e serve SPA antes das rotas de API ──
+app.use((req, res, next) => {
+  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
+  const temApiKey  = !!req.header('x-api-key');
+  // Se o browser pediu HTML e não veio com API key → é uma navegação do React Router
+  if (aceitaHtml && !temApiKey && req.method === 'GET') {
+    const buildPath = path.join(__dirname, 'build');
+    const fs = require('fs');
+    const indexPath = path.join(buildPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath);
+    }
+  }
+  next();
+});
+
 app.use(cors({
   origin: '*',
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
@@ -57,7 +80,9 @@ if (!API_KEY) {
 function exigirApiKey(req, res, next) {
   if (!API_KEY) return next();
   const chave = req.header('x-api-key');
-  if (chave !== API_KEY) return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  if (chave !== API_KEY) {
+    return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  }
   next();
 }
 // ---------------------------------------------------------------------------
@@ -878,25 +903,99 @@ app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
   }
 });
 
+// ── Upload de arquivos para Cloudinary ──────────────────────────────────────
+
+// Upload PDF (partitura)
+app.post('/upload/partitura', exigirApiKey, upload.single('arquivo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ erro: 'Arquivo ausente' });
+    const { ministerioId, musicaId, instrumento = 'geral', nomeArquivo } = req.body;
+    if (!ministerioId || !musicaId) {
+      return res.status(400).json({ erro: 'ministerioId e musicaId são obrigatórios' });
+    }
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'raw',
+          folder: `ministerios/${ministerioId}/musicas/${musicaId}/partituras`,
+          public_id: instrumento,
+          format: 'pdf',
+          overwrite: true,
+        },
+        (err, result) => err ? reject(err) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+    res.json({
+      url:          result.secure_url,
+      publicId:     result.public_id,
+      instrumento,
+      nomeArquivo:  nomeArquivo || req.file.originalname,
+      tamanhoBytes: result.bytes,
+    });
+  } catch (e) {
+    console.error('[upload/partitura]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// Upload MP3 (áudio de referência)
+app.post('/upload/audio', exigirApiKey, upload.single('arquivo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ erro: 'Arquivo ausente' });
+    const { ministerioId, musicaId } = req.body;
+    if (!ministerioId || !musicaId) {
+      return res.status(400).json({ erro: 'ministerioId e musicaId são obrigatórios' });
+    }
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'video', // Cloudinary usa 'video' para audio
+          folder: `ministerios/${ministerioId}/musicas/${musicaId}`,
+          public_id: 'audio_referencia',
+          overwrite: true,
+        },
+        (err, result) => err ? reject(err) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+    res.json({
+      url:          result.secure_url,
+      publicId:     result.public_id,
+      tamanhoBytes: result.bytes,
+      duracao:      result.duration,
+    });
+  } catch (e) {
+    console.error('[upload/audio]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// Excluir arquivo do Cloudinary
+app.delete('/upload', exigirApiKey, async (req, res) => {
+  try {
+    const { publicId, resourceType = 'raw' } = req.body;
+    if (!publicId) return res.status(400).json({ erro: 'publicId ausente' });
+    const result = await cloudinary.uploader.destroy(publicId,
+      { resource_type: resourceType });
+    res.json({ ok: true, result: result.result });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 // ── Serve React build ────────────────────────────────────────────────────────
 const buildPath = path.join(__dirname, 'build');
 app.use(express.static(buildPath));
 
-// Rotas que pertencem à API — não devem servir index.html
-const API_PREFIXES = [
-  '/musicas', '/plano', '/planos', '/webhook', '/notificacoes',
-  '/admin', '/gravacao', '/cifra', '/hinos', '/dashboard',
-  '/api', '/biblia', '/worker',
-];
-
-// SPA fallback — serve index.html para rotas do React Router
-// Só ativa se a rota NÃO for uma rota de API
+// SPA fallback — browser requests (Accept: text/html) sempre recebem index.html
+// Isso garante que F5 em qualquer rota do React Router funcione
 app.get('*', (req, res) => {
-  const isApi = API_PREFIXES.some(p => req.path.startsWith(p));
-  if (isApi) {
-    return res.status(404).json({ erro: 'Rota não encontrada' });
+  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
+  if (aceitaHtml) {
+    return res.sendFile(path.join(buildPath, 'index.html'));
   }
-  res.sendFile(path.join(buildPath, 'index.html'));
+  res.status(404).json({ erro: 'Rota não encontrada' });
 });
 
 const PORT = process.env.PORT || 3000;
