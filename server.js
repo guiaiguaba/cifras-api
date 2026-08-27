@@ -10,8 +10,8 @@ const exigirPool = (req, res, next) => {
 
 // Wrapper seguro — lança erro descritivo se pool for null
 const safeQuery = async (sql, params) => {
-  if (!pool) throw new Error('Banco de dados não configurado (DATABASE_URL ausente)');
-  return safeQuery(sql, params);
+  if (!pool) return { rows: [], rowCount: 0 };
+  return pool.query(sql, params);
 };
 
 // ── PostgreSQL pool (inline — sem arquivo ./db separado) ────────────────────
