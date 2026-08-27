@@ -57,7 +57,12 @@ if (!API_KEY) {
 function exigirApiKey(req, res, next) {
   if (!API_KEY) return next();
   const chave = req.header('x-api-key');
-  if (chave !== API_KEY) return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  if (chave !== API_KEY) {
+    // Browser fazendo F5 numa rota React (Accept: text/html) → serve SPA
+    const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
+    if (aceitaHtml) return next('route');
+    return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  }
   next();
 }
 // ---------------------------------------------------------------------------
@@ -878,26 +883,7 @@ app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
   }
 });
 
-// ── Serve React build ────────────────────────────────────────────────────────
-const buildPath = path.join(__dirname, 'build');
-app.use(express.static(buildPath));
-
-// Rotas que pertencem à API — não devem servir index.html
-const API_PREFIXES = [
-  '/musicas', '/plano', '/planos', '/webhook', '/notificacoes',
-  '/admin', '/gravacao', '/cifra', '/hinos', '/dashboard',
-  '/api', '/biblia', '/worker',
-];
-
-// SPA fallback — serve index.html para rotas do React Router
-// Só ativa se a rota NÃO for uma rota de API
-app.get('*', (req, res) => {
-  const isApi = API_PREFIXES.some(p => req.path.startsWith(p));
-  if (isApi) {
-    return res.status(404).json({ erro: 'Rota não encontrada' });
-  }
-  res.sendFile(path.join(buildPath, 'index.html'));
-});
+// cifras-api: sem serve de arquivos estáticos (só API)
 
 const PORT = process.env.PORT || 3000;
 // Handler global de erros não capturados — evita crash do servidor
