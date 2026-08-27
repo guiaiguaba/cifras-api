@@ -881,8 +881,21 @@ app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
 // ── Serve React build ────────────────────────────────────────────────────────
 const buildPath = path.join(__dirname, 'build');
 app.use(express.static(buildPath));
-// Qualquer rota não reconhecida pela API devolve o index.html do React (SPA)
+
+// Rotas que pertencem à API — não devem servir index.html
+const API_PREFIXES = [
+  '/musicas', '/plano', '/planos', '/webhook', '/notificacoes',
+  '/admin', '/gravacao', '/cifra', '/hinos', '/dashboard',
+  '/api', '/biblia', '/worker',
+];
+
+// SPA fallback — serve index.html para rotas do React Router
+// Só ativa se a rota NÃO for uma rota de API
 app.get('*', (req, res) => {
+  const isApi = API_PREFIXES.some(p => req.path.startsWith(p));
+  if (isApi) {
+    return res.status(404).json({ erro: 'Rota não encontrada' });
+  }
   res.sendFile(path.join(buildPath, 'index.html'));
 });
 
