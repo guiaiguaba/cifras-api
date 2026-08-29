@@ -40,6 +40,9 @@ cloudinary.config({
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  console.warn('AVISO: CLOUDINARY_CLOUD_NAME não definida. Upload de arquivos não funcionará.');
+}
 // ── Multer — upload em memória (passa para Cloudinary) ──────────────────────
 const multer  = require('multer');
 const upload  = multer({
@@ -49,7 +52,21 @@ const upload  = multer({
 
 const app = express();
 // ── CORS aberto para o webapp React ─────────────────────────────────────────
-// cifras-api: sem middleware de SPA
+// ── Intercepta requests do browser (F5) e serve SPA antes das rotas de API ──
+app.use((req, res, next) => {
+  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
+  const temApiKey  = !!req.header('x-api-key');
+  // Se o browser pediu HTML e não veio com API key → é uma navegação do React Router
+  if (aceitaHtml && !temApiKey && req.method === 'GET') {
+    const buildPath = path.join(__dirname, 'build');
+    const fs = require('fs');
+    const indexPath = path.join(buildPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath);
+    }
+  }
+  next();
+});
 
 app.use(cors({
   origin: '*',
@@ -57,7 +74,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type','x-api-key','Authorization'],
 }));
 app.options('*', cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 const API_KEY        = process.env.API_KEY;
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
 if (!API_KEY) {
@@ -952,8 +970,8 @@ app.post('/upload/audio', exigirApiKey, upload.single('arquivo'), async (req, re
       duracao:      result.duration,
     });
   } catch (e) {
-    console.error('[upload/audio]', e.message);
-    res.status(500).json({ erro: e.message });
+    console.error('[upload/audio] erro completo:', e);
+    res.status(500).json({ erro: e.message || 'Erro interno', detalhe: e.http_code });
   }
 });
 
@@ -970,7 +988,19 @@ app.delete('/upload', exigirApiKey, async (req, res) => {
   }
 });
 
-// cifras-api: sem serve de arquivos estáticos
+// ── Serve React build ────────────────────────────────────────────────────────
+const buildPath = path.join(__dirname, 'build');
+app.use(express.static(buildPath));
+
+// SPA fallback — browser requests (Accept: text/html) sempre recebem index.html
+// Isso garante que F5 em qualquer rota do React Router funcione
+app.get('*', (req, res) => {
+  const aceitaHtml = (req.headers['accept'] || '').includes('text/html');
+  if (aceitaHtml) {
+    return res.sendFile(path.join(buildPath, 'index.html'));
+  }
+  res.status(404).json({ erro: 'Rota não encontrada' });
+});
 
 const PORT = process.env.PORT || 3000;
 // Handler global de erros não capturados — evita crash do servidor

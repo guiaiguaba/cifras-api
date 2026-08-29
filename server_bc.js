@@ -8,6 +8,12 @@ const exigirPool = (req, res, next) => {
   next();
 };
 
+// Wrapper seguro — lança erro descritivo se pool for null
+const safeQuery = async (sql, params) => {
+  if (!pool) return { rows: [], rowCount: 0 };
+  return pool.query(sql, params);
+};
+
 // ── PostgreSQL pool (inline — sem arquivo ./db separado) ────────────────────
 const { Pool } = require('pg');
 const pool = process.env.DATABASE_URL
@@ -34,8 +40,17 @@ cloudinary.config({
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+// ── Multer — upload em memória (passa para Cloudinary) ──────────────────────
+const multer  = require('multer');
+const upload  = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+});
+
 const app = express();
 // ── CORS aberto para o webapp React ─────────────────────────────────────────
+// cifras-api: sem middleware de SPA
+
 app.use(cors({
   origin: '*',
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
@@ -51,16 +66,18 @@ if (!API_KEY) {
 function exigirApiKey(req, res, next) {
   if (!API_KEY) return next();
   const chave = req.header('x-api-key');
-  if (chave !== API_KEY) return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  if (chave !== API_KEY) {
+    return res.status(401).json({ erro: 'API key inválida ou ausente.' });
+  }
   next();
 }
 // ---------------------------------------------------------------------------
 // Helpers de plano
 // ---------------------------------------------------------------------------
 async function getOuCriarPlano(adminUid) {
-  const { rows } = await pool.query('SELECT * FROM na_planos WHERE admin_uid=$1', [adminUid]);
+  const { rows } = await safeQuery('SELECT * FROM na_planos WHERE admin_uid=$1', [adminUid]);
   if (rows.length > 0) return rows[0];
-  const { rows: novo } = await pool.query(
+  const { rows: novo } = await safeQuery(
     `INSERT INTO na_planos (admin_uid,plano,limite_membros,limite_ministerios,permite_gravacao,permite_ia)
      VALUES ($1,'free',10,1,false,false) RETURNING *`,
     [adminUid]
@@ -127,7 +144,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
     const validade = new Date();
     if (periodo === 'anual') validade.setFullYear(validade.getFullYear() + 1);
     else validade.setMonth(validade.getMonth() + 1);
-    await pool.query(
+    await safeQuery(
       `INSERT INTO na_planos (admin_uid,plano,validade,pagamento_id,limite_membros,limite_ministerios,permite_gravacao,permite_ia)
        VALUES ($1,'pro',$2,$3,30,2,true,true)
        ON CONFLICT (admin_uid) DO UPDATE SET
@@ -136,7 +153,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
          permite_gravacao=true,permite_ia=true,atualizado_em=now()`,
       [adminUid, validade, String(pagamentoId)]
     );
-    await pool.query(
+    await safeQuery(
       `INSERT INTO na_pagamentos (admin_uid,pagamento_id,status,valor,periodo)
        VALUES ($1,$2,'approved',$3,$4) ON CONFLICT (pagamento_id) DO NOTHING`,
       [adminUid, String(pagamentoId), valor, periodo]
@@ -152,8 +169,8 @@ app.post('/webhook/mercadopago', async (req, res) => {
 // Dashboard HTML de planos
 // ---------------------------------------------------------------------------
 app.get('/admin/planos', exigirPool, async (req, res) => {
-  const { rows }      = await pool.query(`SELECT * FROM na_planos ORDER BY atualizado_em DESC`);
-  const { rows: pags } = await pool.query(`SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 50`);
+  const { rows }      = await safeQuery(`SELECT * FROM na_planos ORDER BY atualizado_em DESC`);
+  const { rows: pags } = await safeQuery(`SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 50`);
   const linhas = rows.map(r => {
     const ativo    = planoEstaAtivo(r);
     const validade = r.validade ? new Date(r.validade).toLocaleDateString('pt-BR') : '—';
@@ -269,8 +286,8 @@ app.post('/notificacoes/escala', exigirApiKey, async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/admin/planos/lista', exigirApiKey, async (req, res) => {
   try {
-    const { rows: planos     } = await pool.query('SELECT * FROM na_planos ORDER BY atualizado_em DESC');
-    const { rows: pagamentos } = await pool.query('SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 100');
+    const { rows: planos     } = await safeQuery('SELECT * FROM na_planos ORDER BY atualizado_em DESC');
+    const { rows: pagamentos } = await safeQuery('SELECT * FROM na_pagamentos ORDER BY criado_em DESC LIMIT 100');
     const totalPro   = planos.filter(p => p.plano==='pro' && p.validade && new Date(p.validade)>new Date()).length;
     const totalFree  = planos.length - totalPro;
     const inicioMes  = new Date(); inicioMes.setDate(1); inicioMes.setHours(0,0,0,0);
@@ -288,7 +305,7 @@ app.post('/admin/planos/ativar', exigirApiKey, async (req, res) => {
     if (periodo==='anual')      validade.setFullYear(validade.getFullYear()+1);
     else if (periodo==='trial') validade.setDate(validade.getDate()+7);
     else                        validade.setMonth(validade.getMonth()+1);
-    await pool.query(
+    await safeQuery(
       `INSERT INTO na_planos (admin_uid,plano,validade,limite_membros,limite_ministerios,permite_gravacao,permite_ia)
        VALUES ($1,'pro',$2,30,2,true,true)
        ON CONFLICT (admin_uid) DO UPDATE SET
@@ -303,7 +320,7 @@ app.post('/admin/planos/revogar', exigirApiKey, async (req, res) => {
   try {
     const { adminUid } = req.body;
     if (!adminUid) return res.status(400).json({ erro: 'adminUid obrigatório.' });
-    await pool.query(
+    await safeQuery(
       `UPDATE na_planos SET plano='free',validade=NULL,
          limite_membros=10,limite_ministerios=1,
          permite_gravacao=false,permite_ia=false,atualizado_em=now()
@@ -333,20 +350,20 @@ app.delete('/gravacao', exigirApiKey, async (req, res) => {
 app.get('/musicas', exigirApiKey, async (req, res) => {
   const q = (req.query.q || '').trim();
   const { rows } = q
-    ? await pool.query(
+    ? await safeQuery(
         `SELECT id,titulo,artista,imagem_url,cifra_original,tom_original
          FROM cifras_musicas
          WHERE titulo ILIKE $1 OR artista ILIKE $1
          ORDER BY titulo LIMIT 50`,
         [`%${q}%`]
       )
-    : await pool.query(
+    : await safeQuery(
         'SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas ORDER BY titulo'
       );
   res.json(rows.map(formatarMusica));
 });
 app.get('/musicas/:id', exigirApiKey, async (req, res) => {
-  const { rows } = await pool.query(
+  const { rows } = await safeQuery(
     'SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas WHERE id=$1',
     [req.params.id]
   );
@@ -358,7 +375,7 @@ app.post('/musicas', exigirApiKey, async (req, res) => {
   if (!titulo || !cifraOriginal || !tomOriginal)
     return res.status(400).json({ erro: 'titulo, cifraOriginal e tomOriginal são obrigatórios.' });
   const id = crypto.randomUUID();
-  await pool.query(
+  await safeQuery(
     'INSERT INTO cifras_musicas (id,titulo,artista,imagem_url,cifra_original,tom_original) VALUES ($1,$2,$3,$4,$5,$6)',
     [id,titulo,artista??null,imagemUrl??null,cifraOriginal,tomOriginal]
   );
@@ -366,7 +383,7 @@ app.post('/musicas', exigirApiKey, async (req, res) => {
 });
 app.put('/musicas/:id', exigirApiKey, async (req, res) => {
   const { titulo, artista, imagemUrl, cifraOriginal, tomOriginal } = req.body;
-  const { rowCount } = await pool.query(
+  const { rowCount } = await safeQuery(
     `UPDATE cifras_musicas SET titulo=$1,artista=$2,imagem_url=$3,cifra_original=$4,tom_original=$5,atualizado_em=now() WHERE id=$6`,
     [titulo,artista??null,imagemUrl??null,cifraOriginal,tomOriginal,req.params.id]
   );
@@ -374,12 +391,12 @@ app.put('/musicas/:id', exigirApiKey, async (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/musicas/:id', exigirApiKey, async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM cifras_musicas WHERE id=$1',[req.params.id]);
+  const { rowCount } = await safeQuery('DELETE FROM cifras_musicas WHERE id=$1',[req.params.id]);
   if (!rowCount) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json({ ok: true });
 });
 app.get('/musicas/:musicaId/variantes', exigirApiKey, async (req, res) => {
-  const { rows } = await pool.query(
+  const { rows } = await safeQuery(
     'SELECT id,musica_id,label,semitons_transposicao,cifra_texto_custom FROM cifras_variantes WHERE musica_id=$1',
     [req.params.musicaId]
   );
@@ -389,7 +406,7 @@ app.post('/musicas/:musicaId/variantes', exigirApiKey, async (req, res) => {
   const { label, semitomsTransposicao, cifraTextoCustom } = req.body;
   if (!label) return res.status(400).json({ erro: 'label é obrigatório.' });
   const id = crypto.randomUUID();
-  await pool.query(
+  await safeQuery(
     'INSERT INTO cifras_variantes (id,musica_id,label,semitons_transposicao,cifra_texto_custom) VALUES ($1,$2,$3,$4,$5)',
     [id,req.params.musicaId,label,semitomsTransposicao??0,cifraTextoCustom??null]
   );
@@ -397,7 +414,7 @@ app.post('/musicas/:musicaId/variantes', exigirApiKey, async (req, res) => {
 });
 app.put('/variantes/:id', exigirApiKey, async (req, res) => {
   const { label, semitomsTransposicao, cifraTextoCustom } = req.body;
-  const { rowCount } = await pool.query(
+  const { rowCount } = await safeQuery(
     'UPDATE cifras_variantes SET label=$1,semitons_transposicao=$2,cifra_texto_custom=$3 WHERE id=$4',
     [label,semitomsTransposicao??0,cifraTextoCustom??null,req.params.id]
   );
@@ -405,7 +422,7 @@ app.put('/variantes/:id', exigirApiKey, async (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/variantes/:id', exigirApiKey, async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM cifras_variantes WHERE id=$1',[req.params.id]);
+  const { rowCount } = await safeQuery('DELETE FROM cifras_variantes WHERE id=$1',[req.params.id]);
   if (!rowCount) return res.status(404).json({ erro: 'Variante não encontrada.' });
   res.json({ ok: true });
 });
@@ -415,7 +432,7 @@ app.get('/registros', exigirApiKey, async (req, res) => {
   if (musicaId)  { valores.push(musicaId);  condicoes.push(`musica_id=$${valores.length}`); }
   if (tipoCulto) { valores.push(tipoCulto); condicoes.push(`tipo_culto=$${valores.length}`); }
   const where = condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : '';
-  const { rows } = await pool.query(
+  const { rows } = await safeQuery(
     `SELECT id,musica_id,variante_id,data,tipo_culto FROM cifras_registros ${where} ORDER BY data DESC`,
     valores
   );
@@ -425,25 +442,25 @@ app.post('/registros', exigirApiKey, async (req, res) => {
   const { musicaId, varianteId, data, tipoCulto } = req.body;
   if (!musicaId||!data||!tipoCulto) return res.status(400).json({ erro: 'musicaId, data e tipoCulto são obrigatórios.' });
   const id = crypto.randomUUID();
-  await pool.query(
+  await safeQuery(
     'INSERT INTO cifras_registros (id,musica_id,variante_id,data,tipo_culto) VALUES ($1,$2,$3,$4,$5)',
     [id,musicaId,varianteId??null,data,tipoCulto]
   );
   res.status(201).json({ id,musicaId,varianteId:varianteId??null,data,tipoCulto });
 });
 app.delete('/registros/:id', exigirApiKey, async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM cifras_registros WHERE id=$1',[req.params.id]);
+  const { rowCount } = await safeQuery('DELETE FROM cifras_registros WHERE id=$1',[req.params.id]);
   if (!rowCount) return res.status(404).json({ erro: 'Registro não encontrado.' });
   res.json({ ok: true });
 });
 // Dashboard estático
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 app.get('/dashboard-api/musicas', async (req, res) => {
-  const { rows } = await pool.query('SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas ORDER BY titulo');
+  const { rows } = await safeQuery('SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas ORDER BY titulo');
   res.json(rows.map(formatarMusica));
 });
 app.get('/dashboard-api/musicas/:id', async (req, res) => {
-  const { rows } = await pool.query('SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas WHERE id=$1',[req.params.id]);
+  const { rows } = await safeQuery('SELECT id,titulo,artista,imagem_url,cifra_original,tom_original FROM cifras_musicas WHERE id=$1',[req.params.id]);
   if (!rows.length) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json(formatarMusica(rows[0]));
 });
@@ -451,12 +468,12 @@ app.post('/dashboard-api/musicas', async (req, res) => {
   const { titulo,artista,imagemUrl,cifraOriginal,tomOriginal } = req.body;
   if (!titulo||!cifraOriginal||!tomOriginal) return res.status(400).json({ erro: 'titulo, cifraOriginal e tomOriginal são obrigatórios.' });
   const id = crypto.randomUUID();
-  await pool.query('INSERT INTO cifras_musicas (id,titulo,artista,imagem_url,cifra_original,tom_original) VALUES ($1,$2,$3,$4,$5,$6)',[id,titulo,artista??null,imagemUrl??null,cifraOriginal,tomOriginal]);
+  await safeQuery('INSERT INTO cifras_musicas (id,titulo,artista,imagem_url,cifra_original,tom_original) VALUES ($1,$2,$3,$4,$5,$6)',[id,titulo,artista??null,imagemUrl??null,cifraOriginal,tomOriginal]);
   res.status(201).json({ id,titulo,artista:artista??null,imagemUrl:imagemUrl??null,cifraOriginal,tomOriginal });
 });
 app.put('/dashboard-api/musicas/:id', async (req, res) => {
   const { titulo,artista,imagemUrl,cifraOriginal,tomOriginal } = req.body;
-  const { rowCount } = await pool.query(
+  const { rowCount } = await safeQuery(
     'UPDATE cifras_musicas SET titulo=$1,artista=$2,imagem_url=$3,cifra_original=$4,tom_original=$5,atualizado_em=now() WHERE id=$6',
     [titulo,artista??null,imagemUrl??null,cifraOriginal,tomOriginal,req.params.id]
   );
@@ -464,7 +481,7 @@ app.put('/dashboard-api/musicas/:id', async (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/dashboard-api/musicas/:id', async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM cifras_musicas WHERE id=$1',[req.params.id]);
+  const { rowCount } = await safeQuery('DELETE FROM cifras_musicas WHERE id=$1',[req.params.id]);
   if (!rowCount) return res.status(404).json({ erro: 'Música não encontrada.' });
   res.json({ ok: true });
 });
@@ -490,12 +507,12 @@ app.get('/hinos', exigirApiKey, async (req, res) => {
     let rows, total;
     if (q.trim()) {
       const busca=`%${q.trim()}%`;
-      const r1=await pool.query(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR letra ILIKE $2) ORDER BY numero LIMIT $3 OFFSET $4`,[hinario,busca,limit,offset]);
-      const r2=await pool.query(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR letra ILIKE $2)`,[hinario,busca]);
+      const r1=await safeQuery(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR letra ILIKE $2) ORDER BY numero LIMIT $3 OFFSET $4`,[hinario,busca,limit,offset]);
+      const r2=await safeQuery(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR letra ILIKE $2)`,[hinario,busca]);
       rows=r1.rows; total=parseInt(r2.rows[0].count);
     } else {
-      const r1=await pool.query(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 ORDER BY numero LIMIT $2 OFFSET $3`,[hinario,limit,offset]);
-      const r2=await pool.query(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1`,[hinario]);
+      const r1=await safeQuery(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 ORDER BY numero LIMIT $2 OFFSET $3`,[hinario,limit,offset]);
+      const r2=await safeQuery(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1`,[hinario]);
       rows=r1.rows; total=parseInt(r2.rows[0].count);
     }
     res.json({ total, pagina:parseInt(pagina), hinos:rows });
@@ -503,13 +520,13 @@ app.get('/hinos', exigirApiKey, async (req, res) => {
 });
 app.get('/hinos/stats', exigirApiKey, async (req, res) => {
   try {
-    const { rows }=await pool.query(`SELECT hinario,COUNT(*) as total,COUNT(cifra) as com_cifra FROM cifras_hinos GROUP BY hinario ORDER BY hinario`);
+    const { rows }=await safeQuery(`SELECT hinario,COUNT(*) as total,COUNT(cifra) as com_cifra FROM cifras_hinos GROUP BY hinario ORDER BY hinario`);
     res.json(rows);
   } catch(e) { res.status(500).json({ erro:'Erro ao buscar estatísticas' }); }
 });
 app.get('/hinos/:hinario/:numero', exigirApiKey, async (req, res) => {
   try {
-    const { rows }=await pool.query(`SELECT * FROM cifras_hinos WHERE hinario=$1 AND numero=$2`,[req.params.hinario,parseInt(req.params.numero)]);
+    const { rows }=await safeQuery(`SELECT * FROM cifras_hinos WHERE hinario=$1 AND numero=$2`,[req.params.hinario,parseInt(req.params.numero)]);
     if (!rows.length) return res.status(404).json({ erro:'Hino não encontrado.' });
     res.json(rows[0]);
   } catch(e) { res.status(500).json({ erro:'Erro ao buscar hino' }); }
@@ -517,7 +534,7 @@ app.get('/hinos/:hinario/:numero', exigirApiKey, async (req, res) => {
 app.put('/hinos/:hinario/:numero/cifra', exigirApiKey, async (req, res) => {
   const { cifra, tom }=req.body;
   try {
-    const { rowCount }=await pool.query(`UPDATE cifras_hinos SET cifra=$1,tom=$2,atualizado_em=now() WHERE hinario=$3 AND numero=$4`,[cifra??null,tom??null,req.params.hinario,parseInt(req.params.numero)]);
+    const { rowCount }=await safeQuery(`UPDATE cifras_hinos SET cifra=$1,tom=$2,atualizado_em=now() WHERE hinario=$3 AND numero=$4`,[cifra??null,tom??null,req.params.hinario,parseInt(req.params.numero)]);
     if (!rowCount) return res.status(404).json({ erro:'Hino não encontrado.' });
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ erro:'Erro ao salvar cifra do hino' }); }
@@ -529,12 +546,12 @@ app.get('/dashboard-api/hinos', async (req, res) => {
     let rows, total;
     if (q.trim()) {
       const busca=`%${q.trim()}%`;
-      const r1=await pool.query(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR CAST(numero AS TEXT) LIKE $2) ORDER BY numero LIMIT $3 OFFSET $4`,[hinario,busca,limit,offset]);
-      const r2=await pool.query(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR CAST(numero AS TEXT) LIKE $2)`,[hinario,busca]);
+      const r1=await safeQuery(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR CAST(numero AS TEXT) LIKE $2) ORDER BY numero LIMIT $3 OFFSET $4`,[hinario,busca,limit,offset]);
+      const r2=await safeQuery(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1 AND (titulo ILIKE $2 OR CAST(numero AS TEXT) LIKE $2)`,[hinario,busca]);
       rows=r1.rows; total=parseInt(r2.rows[0].count);
     } else {
-      const r1=await pool.query(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 ORDER BY numero LIMIT $2 OFFSET $3`,[hinario,limit,offset]);
-      const r2=await pool.query(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1`,[hinario]);
+      const r1=await safeQuery(`SELECT id,numero,titulo,hinario,cifra,tom FROM cifras_hinos WHERE hinario=$1 ORDER BY numero LIMIT $2 OFFSET $3`,[hinario,limit,offset]);
+      const r2=await safeQuery(`SELECT COUNT(*) FROM cifras_hinos WHERE hinario=$1`,[hinario]);
       rows=r1.rows; total=parseInt(r2.rows[0].count);
     }
     res.json({ total, pagina:parseInt(pagina), hinos:rows });
@@ -542,7 +559,7 @@ app.get('/dashboard-api/hinos', async (req, res) => {
 });
 app.get('/dashboard-api/hinos/:hinario/:numero', async (req, res) => {
   try {
-    const { rows }=await pool.query('SELECT * FROM cifras_hinos WHERE hinario=$1 AND numero=$2',[req.params.hinario,parseInt(req.params.numero)]);
+    const { rows }=await safeQuery('SELECT * FROM cifras_hinos WHERE hinario=$1 AND numero=$2',[req.params.hinario,parseInt(req.params.numero)]);
     if (!rows.length) return res.status(404).json({ erro:'Hino não encontrado.' });
     res.json(rows[0]);
   } catch(e) { res.status(500).json({ erro:'Erro ao buscar hino' }); }
@@ -550,7 +567,7 @@ app.get('/dashboard-api/hinos/:hinario/:numero', async (req, res) => {
 app.put('/dashboard-api/hinos/:hinario/:numero/cifra', async (req, res) => {
   const { cifra, tom }=req.body;
   try {
-    const { rowCount }=await pool.query(`UPDATE cifras_hinos SET cifra=$1,tom=$2,atualizado_em=now() WHERE hinario=$3 AND numero=$4`,[cifra??null,tom??null,req.params.hinario,parseInt(req.params.numero)]);
+    const { rowCount }=await safeQuery(`UPDATE cifras_hinos SET cifra=$1,tom=$2,atualizado_em=now() WHERE hinario=$3 AND numero=$4`,[cifra??null,tom??null,req.params.hinario,parseInt(req.params.numero)]);
     if (!rowCount) return res.status(404).json({ erro:'Hino não encontrado.' });
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ erro:'Erro ao salvar cifra' }); }
@@ -872,18 +889,106 @@ app.post('/cifra/playlist', exigirApiKey, async (req, res) => {
   }
 });
 
-// ── Serve React build ────────────────────────────────────────────────────────
-const buildPath = path.join(__dirname, 'build');
-app.use(express.static(buildPath));
-// Qualquer rota não reconhecida pela API devolve o index.html do React (SPA)
-app.get('*', (req, res) => {
-  res.sendFile(path.join(buildPath, 'index.html'));
+// ── Upload de arquivos para Cloudinary ──────────────────────────────────────
+
+// Upload PDF (partitura)
+app.post('/upload/partitura', exigirApiKey, upload.single('arquivo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ erro: 'Arquivo ausente' });
+    const { ministerioId, musicaId, instrumento = 'geral', nomeArquivo } = req.body;
+    if (!ministerioId || !musicaId) {
+      return res.status(400).json({ erro: 'ministerioId e musicaId são obrigatórios' });
+    }
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'raw',
+          folder: `ministerios/${ministerioId}/musicas/${musicaId}/partituras`,
+          public_id: instrumento,
+          format: 'pdf',
+          overwrite: true,
+        },
+        (err, result) => err ? reject(err) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+    res.json({
+      url:          result.secure_url,
+      publicId:     result.public_id,
+      instrumento,
+      nomeArquivo:  nomeArquivo || req.file.originalname,
+      tamanhoBytes: result.bytes,
+    });
+  } catch (e) {
+    console.error('[upload/partitura]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
 });
 
-const PORT = process.env.PORT || 3000;
-initSchema().then(() => {
-  app.listen(PORT, () => console.log(`Base de Adoração API rodando na porta ${PORT}`));
-}).catch(err => {
-  console.error('Erro ao inicializar schema:', err);
-  process.exit(1);
+// Upload MP3 (áudio de referência)
+app.post('/upload/audio', exigirApiKey, upload.single('arquivo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ erro: 'Arquivo ausente' });
+    const { ministerioId, musicaId } = req.body;
+    if (!ministerioId || !musicaId) {
+      return res.status(400).json({ erro: 'ministerioId e musicaId são obrigatórios' });
+    }
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'video', // Cloudinary usa 'video' para audio
+          folder: `ministerios/${ministerioId}/musicas/${musicaId}`,
+          public_id: 'audio_referencia',
+          overwrite: true,
+        },
+        (err, result) => err ? reject(err) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+    res.json({
+      url:          result.secure_url,
+      publicId:     result.public_id,
+      tamanhoBytes: result.bytes,
+      duracao:      result.duration,
+    });
+  } catch (e) {
+    console.error('[upload/audio]', e.message);
+    res.status(500).json({ erro: e.message });
+  }
 });
+
+// Excluir arquivo do Cloudinary
+app.delete('/upload', exigirApiKey, async (req, res) => {
+  try {
+    const { publicId, resourceType = 'raw' } = req.body;
+    if (!publicId) return res.status(400).json({ erro: 'publicId ausente' });
+    const result = await cloudinary.uploader.destroy(publicId,
+      { resource_type: resourceType });
+    res.json({ ok: true, result: result.result });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// cifras-api: sem serve de arquivos estáticos
+
+const PORT = process.env.PORT || 3000;
+// Handler global de erros não capturados — evita crash do servidor
+app.use((err, req, res, next) => {
+  console.error('[server] erro não capturado:', err.message);
+  if (!res.headersSent) {
+    res.status(500).json({ erro: err.message || 'Erro interno do servidor' });
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message);
+  // Não encerra o processo — apenas loga
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+  // Não encerra o processo — apenas loga
+});
+
+app.listen(PORT, () => console.log(`Base de Adoração API rodando na porta ${PORT}`));
